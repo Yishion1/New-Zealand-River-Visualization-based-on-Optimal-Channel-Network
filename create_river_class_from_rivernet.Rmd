@@ -1,0 +1,244 @@
+---
+title: "rivnet_to_river::class"
+author: "Yifan Wang"
+date: "2024-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r }
+library(sf)
+library(dplyr)
+library(mapview)
+library(riverdist)
+library(webshot)
+library(OCNet)
+library(rivnet)
+library(stringr)
+
+shapefilePath <- "D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp"
+
+riverLines <- st_read(shapefilePath)
+
+
+fishfilePath<-"D:/Dissertation/fish data/occurrence.txt"
+fish<- read.delim(fishfilePath, header=TRUE, stringsAsFactors=FALSE, fill=TRUE, na.strings=c("", "NULL"))
+# 假设 fish 是你的数据框，并且 footprintWKT 是包含点坐标的列
+# 提取经纬度，这次确保 lat 和 lon 的顺序互换
+coords <- str_extract_all(fish$footprintWKT, "[\\-0-9\\.]+") %>%
+  sapply(function(x) {
+    c(lat = as.numeric(x[2]), lon = as.numeric(x[1])) # 注意这里 lat 和 lon 的顺序已经调整
+  }) %>%
+  t() %>%
+  as.data.frame()
+
+# 转换为数值型
+coords[] <- lapply(coords, as.numeric)
+
+# 重命名列为 lat 和 lon
+names(coords) <- c("lat", "lon")
+
+# 移除包含 NA 的行
+coords_clean <- na.omit(coords)
+
+# 检查是否还有 NA
+sum(is.na(coords_clean))
+
+# 使用提取的经纬度值创建 sf 对象，确保没有 NA 值
+if (sum(is.na(coords_clean)) == 0) {
+  fish_sf <- st_as_sf(coords_clean, coords = c("lon", "lat"), crs = 4326) # 注意这里 st_as_sf 仍然需要 lon 在前，lat 在后
+} else {
+  stop("There are still NA values in the coordinates.")
+}
+
+# 使用 mapview 查看前10个点，确保使用默认的背景地图
+mapview(fish_sf[1:10, ])
+```
+
+#查询特定ID的连接网络
+
+```{r}
+ID=98018
+findConnected <- function(targetID, riverLines, visited = numeric()) {
+  # 初始化一个队列，存放当前层级待访问的节点
+  queue <- c(targetID)
+  while (length(queue) > 0) {
+    # 取出队列的第一个元素
+    currentID <- queue[1]
+    queue <- queue[-1]
+    # 检查是否遇到结束标志
+    if(currentID == -1) {
+      next # 跳过当前迭代
+    }
+    # 将当前节点添加到已访问列表
+    if (!currentID %in% visited) {
+      visited <- c(visited, currentID)
+      # 找到所有下游节点，即当前节点作为NextDownID的节点
+      downstreamIDs <- riverLines$HydroID[riverLines$NextDownID == currentID]
+      
+      # 找到所有上游节点，即当前节点的HydroID在其他节点的NextDownID中的节点
+      upstreamIDs <- riverLines$NextDownID[riverLines$HydroID == currentID]
+      
+      # 将未访问的下游和上游节点添加到队列中
+      for (id in c(downstreamIDs, upstreamIDs)) {
+        if (!id %in% visited ) { # 确保不将结束标志或已访问的节点添加到队列
+          queue <- c(queue, id)
+        }
+      }
+    }
+  }
+  
+  # 移除列表中的-1，如果存在
+  visited <- visited[visited != -1]
+  
+  return(visited)
+}
+
+# 使用定义的函数，从HydroID=98753开始找到所有相连的河流段
+connected_hydroIDs <- findConnected(ID, riverLines)
+
+# 输出找到的HydroID数量
+cat("Found connected HydroIDs count:", length(connected_hydroIDs), "\n")
+
+# 如果你想获取这些HydroID对应的完整行数据，可以使用以下代码
+connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+mapview(connected_river_segments%>%filter(StreamOrde!=1))
+
+```
+
+#通过Nextdown_id=-1 确定outlet
+
+```{r}
+
+
+
+#通过Nextdown_id=-1 确定outlet
+outlet_row<-connected_river_segments[which(connected_river_segments$NextDownID==-1),]
+outlet_pos<-c(outlet_row$downcoordX,outlet_row$downcoordY)
+x_max<-max(connected_river_segments$upcoordX, connected_river_segments$downcoordX)
+y_max<-max(connected_river_segments$upcoordY, connected_river_segments$downcoordY)
+x_min<-min(connected_river_segments$upcoordX, connected_river_segments$downcoordX)
+y_min<-min(connected_river_segments$upcoordY, connected_river_segments$downcoordY)
+
+# 从riverLines中筛选出在范围内的出口
+selected_segments <- riverLines %>%
+  filter(NextDownID == -1, # NextDownID等于-1
+         upcoordX >= x_min & upcoordX <= x_max, # X坐标在范围内
+         downcoordX >= x_min & downcoordX <= x_max, # X坐标在范围内
+         upcoordY >= y_min & upcoordY <= y_max, # Y坐标在范围内
+         downcoordY >= y_min & downcoordY <= y_max) # Y坐标在范围内
+# 查看筛选后的数据
+print(selected_segments)
+outlet_rows <- selected_segments[which(selected_segments$NextDownID == -1),]
+# 将出口的upcoordX和upcoordY坐标存储到data.frame中
+outlet_pos_df <- data.frame(x=outlet_rows$upcoordX, y=outlet_rows$upcoordY)
+# 打印outlet_pos_df查看结果
+print(outlet_pos_df)
+
+
+TAUDEM_PATH='C:/Program Files/TauDEM'
+r2 <- extract_river(outlet=outlet_pos_df[5,],
+	EPSG=2193, #New Zealand NZTM2000
+	ext=c(x_min,x_max,y_min,y_max),
+	z=10)
+plot(r2)
+
+#colour represent the elevation
+draw_elev3D_OCN(r2,drawRiver = TRUE)
+```
+
+```{r}
+#slope0 is the slope of the outlet pixel
+OCNwe <- landscape_OCN(r2, slope0 = tail(r2$FD$slope,1))
+thr <- find_area_threshold_OCN(OCNwe)
+#calculation the elevation of the lowest pixel(according to the landscape_OCN)
+
+
+# find index corresponding to thr$Nnodes ~= 20
+indThr <- which(abs(thr$nNodesAG - 20) == min(abs(thr$nNodesAG - 20)))
+indThr <- max(indThr) # pick the last ind_thr that satisfies the condition above
+thrA20 <- thr$thrValues[indThr] # corresponding threshold area
+OCNwe <- aggregate_OCN(OCNwe, thrA = thrA20)
+par(mai=c(0.1,0,0.1,0))
+draw_subcatchments_OCN(OCNwe)
+points(OCNwe$AG$X,OCNwe$AG$Y, pch = 21, col = "blue", bg = "blue")
+
+
+
+OCNwe <- rivergeometry_OCN(OCNwe, widthMax = 5)   # evaluate river width 
+K <- 10*OCNwe$RN$width                             # calculate carrying capacity 
+pop0 <- 2*mean(K)*runif(OCNwe$RN$nNodes)           # initial random population vector
+nTimestep <- 100                                   # number of timesteps
+r <- 1.05                                          # proliferation rate
+pd <- 0.5                                          # probability to move downstream
+pu <- 1 - pd                                       # probability to move upstream
+Go <- 5                                            # parameter controlling mobility 
+# (no. individuals exiting from outlet node at carrying capacity is pu*Go) 
+## Weights for upstream movement
+Y <- rep(1,OCNwe$RN$nNodes)                    
+for (i in 1:OCNwe$RN$nNodes){
+  if (i != OCNwe$RN$outlet){
+    Y[i] <- OCNwe$RN$A[i]/(OCNwe$RN$W[ , OCNwe$RN$downNode[i]] %*% OCNwe$RN$A)
+  }
+}
+GKK <- rep(0, OCNwe$RN$nNodes)
+for (i in (1:OCNwe$RN$nNodes)){
+  path <- OCNwe$RN$downstreamPath[[i]][[OCNwe$RN$outlet]] # select path
+  prod <- Go                                                # initialize product of Y 
+  for (j in path){
+    prod <- prod*Y[j]
+  }
+  GKK[i] <- (pu/pd)^(length(path))*prod  
+}
+## Run metapopulation model
+pop <- matrix(data=0,ncol=nTimestep,nrow=OCNwe$RN$nNodes)  # metapopulation matrix
+pop[,1] <- pop0                                              # initialization
+for (t in 2:nTimestep){
+  for (i in 1:OCNwe$RN$nNodes){
+    pop[i, t] <- 
+      # Beverton-Holt growth model
+      r*pop[i, t-1]/(1 + pop[i, t-1]*(r-1)/K[i]) +
+      # individuals exiting from node i
+                - (pu*(sum(OCNwe$RN$W[ , i])>0) + pd*(sum(OCNwe$RN$W[i, ])>0)) * 
+      GKK[i] * (pop[i,t-1]/K[i]) +
+      # individuals entering in i from the upstream nodes
+                + pd * OCNwe$RN$W[ , i] %*% (GKK*pop[ , t-1]/K) +
+      # individuals entering in i from the downstream node
+                + pu * Y[i] * OCNwe$RN$W[i, ] %*% (GKK*pop[ , t-1]/K) 
+    
+  }
+}
+par(mfrow = c(1, 2))
+plot(pop[OCNwe$RN$outlet, ], type = "l", ylim = c(0, 1.05*K[OCNwe$RN$outlet]), col = "red", 
+     xlab = "Time", ylab = "Population", lwd = 2)
+title("Evolution of local pop. size")
+lines(c(1, nTimestep),c(K[OCNwe$RN$outlet], K[OCNwe$RN$outlet]), col = "red", lty = 2)
+farthestNode <- which(OCNwe$RN$downstreamPathLength[ , OCNwe$RN$outlet]
+                      == max(OCNwe$RN$downstreamPathLength[ , OCNwe$RN$outlet]))[1]
+lines(pop[farthestNode, ], type="l", col="blue",lwd=2)
+lines(c(1, nTimestep), c(K[farthestNode], K[farthestNode]), col = "blue", lty = 2)
+
+plot(colSums(pop), type = "l", xlab = "Time", ylab = "Population", lwd = 2, ylim = c(0, 1.05*sum(K)))
+lines(c(1, nTimestep), c(sum(K),sum(K)), lty = 2)
+title("Evolution of metapop. size")
+par(mfrow = c(2, 2), mai = c(0.1, 0, 0.2, 0))
+draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(K), 1000),
+                  drawNodes = TRUE)
+title("Time = 1")
+draw_thematic_OCN(pop[,5], OCNwe, colLevels = c(0, max(K), 1000),
+                  drawNodes = TRUE)
+title("Time = 5")
+draw_thematic_OCN(pop[,20], OCNwe, colLevels = c(0, max(K), 1000),
+                  drawNodes = TRUE)
+title("Time = 20")
+draw_thematic_OCN(pop[,100], OCNwe, colLevels = c(0, max(K), 1000),
+                  drawNodes = TRUE)
+title("Time = 100")
+```
+
+```{r}
+
+```
