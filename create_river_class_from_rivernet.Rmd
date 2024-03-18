@@ -24,43 +24,12 @@ shapefilePath <- "D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp"
 riverLines <- st_read(shapefilePath)
 
 
-fishfilePath<-"D:/Dissertation/fish data/occurrence.txt"
-fish<- read.delim(fishfilePath, header=TRUE, stringsAsFactors=FALSE, fill=TRUE, na.strings=c("", "NULL"))
-# 假设 fish 是你的数据框，并且 footprintWKT 是包含点坐标的列
-# 提取经纬度，这次确保 lat 和 lon 的顺序互换
-coords <- str_extract_all(fish$footprintWKT, "[\\-0-9\\.]+") %>%
-  sapply(function(x) {
-    c(lat = as.numeric(x[2]), lon = as.numeric(x[1])) # 注意这里 lat 和 lon 的顺序已经调整
-  }) %>%
-  t() %>%
-  as.data.frame()
-
-# 转换为数值型
-coords[] <- lapply(coords, as.numeric)
-
-# 重命名列为 lat 和 lon
-names(coords) <- c("lat", "lon")
-
-# 移除包含 NA 的行
-coords_clean <- na.omit(coords)
-
-# 检查是否还有 NA
-sum(is.na(coords_clean))
-
-# 使用提取的经纬度值创建 sf 对象，确保没有 NA 值
-if (sum(is.na(coords_clean)) == 0) {
-  fish_sf <- st_as_sf(coords_clean, coords = c("lon", "lat"), crs = 4326) # 注意这里 st_as_sf 仍然需要 lon 在前，lat 在后
-} else {
-  stop("There are still NA values in the coordinates.")
-}
-
-# 使用 mapview 查看前10个点，确保使用默认的背景地图
-mapview(fish_sf[1:10, ])
 ```
 
 #查询特定ID的连接网络
 
 ```{r}
+#ID=263375
 ID=98018
 findConnected <- function(targetID, riverLines, visited = numeric()) {
   # 初始化一个队列，存放当前层级待访问的节点
@@ -117,6 +86,7 @@ mapview(connected_river_segments%>%filter(StreamOrde!=1))
 
 #通过Nextdown_id=-1 确定outlet
 outlet_row<-connected_river_segments[which(connected_river_segments$NextDownID==-1),]
+
 outlet_pos<-c(outlet_row$downcoordX,outlet_row$downcoordY)
 x_max<-max(connected_river_segments$upcoordX, connected_river_segments$downcoordX)
 y_max<-max(connected_river_segments$upcoordY, connected_river_segments$downcoordY)
@@ -140,7 +110,7 @@ print(outlet_pos_df)
 
 
 TAUDEM_PATH='C:/Program Files/TauDEM'
-r2 <- extract_river(outlet=outlet_pos_df[5,],
+r2 <- extract_river(outlet=c(outlet_row$downcoordX,outlet_row$downcoordY),
 	EPSG=2193, #New Zealand NZTM2000
 	ext=c(x_min,x_max,y_min,y_max),
 	z=10)
@@ -151,17 +121,20 @@ draw_elev3D_OCN(r2,drawRiver = TRUE)
 ```
 
 ```{r}
+source("D:/Dissertation/ALL_code_file/get_trout_pop_functions.R")
+
+
 #slope0 is the slope of the outlet pixel
-OCNwe <- landscape_OCN(r2, slope0 = tail(r2$FD$slope,1))
-thr <- find_area_threshold_OCN(OCNwe)
+#OCNwe <- landscape_OCN(r2, slope0 = tail(r2$FD$slope,1))
+thr <- find_area_threshold_OCN(r2)
 #calculation the elevation of the lowest pixel(according to the landscape_OCN)
 
 
-# find index corresponding to thr$Nnodes ~= 20
-indThr <- which(abs(thr$nNodesAG - 20) == min(abs(thr$nNodesAG - 20)))
+# find index corresponding to thr$Nnodes ~= 318
+indThr <- which(abs(thr$nNodesAG - 318) == min(abs(thr$nNodesAG - 318)))
 indThr <- max(indThr) # pick the last ind_thr that satisfies the condition above
 thrA20 <- thr$thrValues[indThr] # corresponding threshold area
-OCNwe <- aggregate_OCN(OCNwe, thrA = thrA20)
+OCNwe <- aggregate_OCN(r2, thrA = thrA20)
 par(mai=c(0.1,0,0.1,0))
 draw_subcatchments_OCN(OCNwe)
 points(OCNwe$AG$X,OCNwe$AG$Y, pch = 21, col = "blue", bg = "blue")
@@ -170,12 +143,12 @@ points(OCNwe$AG$X,OCNwe$AG$Y, pch = 21, col = "blue", bg = "blue")
 
 OCNwe <- rivergeometry_OCN(OCNwe, widthMax = 5)   # evaluate river width 
 K <- 10*OCNwe$RN$width                             # calculate carrying capacity 
-pop0 <- 2*mean(K)*runif(OCNwe$RN$nNodes)           # initial random population vector
-nTimestep <- 100                                   # number of timesteps
-r <- 1.05                                          # proliferation rate
-pd <- 0.5                                          # probability to move downstream
+pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000  # initial random population vector
+nTimestep <- 20                                   # number of timesteps
+r <- 1.01                                        # proliferation rate
+pd <- 0.8                                          # probability to move downstream
 pu <- 1 - pd                                       # probability to move upstream
-Go <- 5                                            # parameter controlling mobility 
+Go <- 1                                            # parameter controlling mobility 
 # (no. individuals exiting from outlet node at carrying capacity is pu*Go) 
 ## Weights for upstream movement
 Y <- rep(1,OCNwe$RN$nNodes)                    
@@ -197,6 +170,7 @@ for (i in (1:OCNwe$RN$nNodes)){
 pop <- matrix(data=0,ncol=nTimestep,nrow=OCNwe$RN$nNodes)  # metapopulation matrix
 pop[,1] <- pop0                                              # initialization
 for (t in 2:nTimestep){
+  print(t)
   for (i in 1:OCNwe$RN$nNodes){
     pop[i, t] <- 
       # Beverton-Holt growth model
@@ -212,8 +186,8 @@ for (t in 2:nTimestep){
   }
 }
 par(mfrow = c(1, 2))
-plot(pop[OCNwe$RN$outlet, ], type = "l", ylim = c(0, 1.05*K[OCNwe$RN$outlet]), col = "red", 
-     xlab = "Time", ylab = "Population", lwd = 2)
+plot(pop[OCNwe$RN$outlet, ], type = "l", ylim = c(0, r*K[OCNwe$RN$outlet]), col = "red", 
+     xlab = "Time", ylab = "Population/KM", lwd = 2)
 title("Evolution of local pop. size")
 lines(c(1, nTimestep),c(K[OCNwe$RN$outlet], K[OCNwe$RN$outlet]), col = "red", lty = 2)
 farthestNode <- which(OCNwe$RN$downstreamPathLength[ , OCNwe$RN$outlet]
@@ -225,20 +199,18 @@ plot(colSums(pop), type = "l", xlab = "Time", ylab = "Population", lwd = 2, ylim
 lines(c(1, nTimestep), c(sum(K),sum(K)), lty = 2)
 title("Evolution of metapop. size")
 par(mfrow = c(2, 2), mai = c(0.1, 0, 0.2, 0))
-draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(K), 1000),
-                  drawNodes = TRUE)
+draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(pop0), 100),
+                  drawNodes = FALSE)
 title("Time = 1")
-draw_thematic_OCN(pop[,5], OCNwe, colLevels = c(0, max(K), 1000),
-                  drawNodes = TRUE)
+draw_thematic_OCN(pop[,5], OCNwe, colLevels = c(0, max(pop0), 100),
+                  drawNodes = FALSE)
 title("Time = 5")
-draw_thematic_OCN(pop[,20], OCNwe, colLevels = c(0, max(K), 1000),
-                  drawNodes = TRUE)
+draw_thematic_OCN(pop[,10], OCNwe, colLevels = c(0, max(pop0), 100),
+                  drawNodes = FALSE)
+title("Time = 10")
+draw_thematic_OCN(pop[,20], OCNwe, colLevels = c(0, max(pop0), 100),
+                  drawNodes = FALSE)
 title("Time = 20")
-draw_thematic_OCN(pop[,100], OCNwe, colLevels = c(0, max(K), 1000),
-                  drawNodes = TRUE)
-title("Time = 100")
 ```
 
-```{r}
 
-```
