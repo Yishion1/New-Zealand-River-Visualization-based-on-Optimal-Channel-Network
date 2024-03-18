@@ -24,3 +24,6 @@ FILE： get_trout_pop use the data from 2000 to 2010 to create Kernel density es
 ```
 pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000
 ```
+related paper (Kernel density estimation and its application)itmconf_sam2018_00037
+
+to do: the proliferation rate and mobility need to be simulated
