@@ -20,7 +20,7 @@ geometric mean movement rate was 0.68 m/d
       3. Simulate the probility that trout go upstream or downstream, most trout stay downstream.
 
 # 3.18：
-FILE： get_trout_pop use the data from 2000 to 2010 to create Kernel density estimation of the data. And use the density probability to estimate the trout population according to how long the river segments is.    
+FILE： get_trout_pop use the data from 2000 to 2010 to create Kernel density estimation of the data. And use the density probability to estimate the trout population according to how long the river segments is. 因为人口数量不能为0，但是KDE会自己向外扩张从而平滑曲线，所以在函数里面，我去掉了小于0的   
 ```
 pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000
 ```
