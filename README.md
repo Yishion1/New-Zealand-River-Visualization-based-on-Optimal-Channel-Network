@@ -27,3 +27,8 @@ pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/100
 related paper (Kernel density estimation and its application)itmconf_sam2018_00037
 
 to do: the proliferation rate and mobility need to be simulated
+
+# 3.19：
+Accodrding to (Movement and Mortality of Adult Brown Trout in theMotupiko River, New Zealand: Effects of Water Temperature,Flow, and Flooding) , Rates of movement ranged from 0 to
+ 801 m/d and averaged 22.5 m/d, although this meanwas heavily skewed by the largest movements. The geometric mean movement rate was 0.68 m/d.
+Thus the mobility can be seen as 0.68*Timestep/day
