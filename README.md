@@ -32,3 +32,6 @@ to do: the proliferation rate and mobility need to be simulated
 Accodrding to (Movement and Mortality of Adult Brown Trout in theMotupiko River, New Zealand: Effects of Water Temperature,Flow, and Flooding) , Rates of movement ranged from 0 to
  801 m/d and averaged 22.5 m/d, although this meanwas heavily skewed by the largest movements. The geometric mean movement rate was 0.68 m/d.
 Thus the mobility can be seen as 0.68*Timestep/day
+
+
+To do： 根据 Density Trout /Km 里面的数据，去掉outlier， 然后模拟曲线来计算生殖率
