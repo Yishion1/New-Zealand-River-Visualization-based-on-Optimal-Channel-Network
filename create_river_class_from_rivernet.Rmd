@@ -29,8 +29,8 @@ riverLines <- st_read(shapefilePath)
 #查询特定ID的连接网络
 
 ```{r}
-#ID=263375
-ID=98018
+ID=263375
+#ID=98018
 findConnected <- function(targetID, riverLines, visited = numeric()) {
   # 初始化一个队列，存放当前层级待访问的节点
   queue <- c(targetID)
@@ -144,11 +144,11 @@ points(OCNwe$AG$X,OCNwe$AG$Y, pch = 21, col = "blue", bg = "blue")
 OCNwe <- rivergeometry_OCN(OCNwe, widthMax = 5)   # evaluate river width 
 K <- 10*OCNwe$RN$width                             # calculate carrying capacity 
 pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000  # initial random population vector
-nTimestep <- 20                                   # number of timesteps
-r <- 1.01                                        # proliferation rate
-pd <- 0.8                                          # probability to move downstream
+nTimestep <- 10                                   # number of timesteps
+r <- 1+average_annual_growth_rate                    # proliferation rate
+pd <- 0.8                                         # probability to move downstream
 pu <- 1 - pd                                       # probability to move upstream
-Go <- 1                                            # parameter controlling mobility 
+Go <- 0.2482                                            # parameter controlling mobility 
 # (no. individuals exiting from outlet node at carrying capacity is pu*Go) 
 ## Weights for upstream movement
 Y <- rep(1,OCNwe$RN$nNodes)                    
@@ -188,29 +188,142 @@ for (t in 2:nTimestep){
 par(mfrow = c(1, 2))
 plot(pop[OCNwe$RN$outlet, ], type = "l", ylim = c(0, r*K[OCNwe$RN$outlet]), col = "red", 
      xlab = "Time", ylab = "Population/KM", lwd = 2)
-title("Evolution of local pop. size")
+title("Evolution of outlet local pop. size")
 lines(c(1, nTimestep),c(K[OCNwe$RN$outlet], K[OCNwe$RN$outlet]), col = "red", lty = 2)
-farthestNode <- which(OCNwe$RN$downstreamPathLength[ , OCNwe$RN$outlet]
-                      == max(OCNwe$RN$downstreamPathLength[ , OCNwe$RN$outlet]))[1]
-lines(pop[farthestNode, ], type="l", col="blue",lwd=2)
-lines(c(1, nTimestep), c(K[farthestNode], K[farthestNode]), col = "blue", lty = 2)
 
 plot(colSums(pop), type = "l", xlab = "Time", ylab = "Population", lwd = 2, ylim = c(0, 1.05*sum(K)))
 lines(c(1, nTimestep), c(sum(K),sum(K)), lty = 2)
 title("Evolution of metapop. size")
 par(mfrow = c(2, 2), mai = c(0.1, 0, 0.2, 0))
-draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(pop0), 100),
+draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 1")
-draw_thematic_OCN(pop[,5], OCNwe, colLevels = c(0, max(pop0), 100),
+draw_thematic_OCN(pop[,3], OCNwe, colLevels = c(0, max(pop), 100),
                   drawNodes = FALSE)
-title("Time = 5")
-draw_thematic_OCN(pop[,10], OCNwe, colLevels = c(0, max(pop0), 100),
+title("Time = 3")
+draw_thematic_OCN(pop[,7], OCNwe, colLevels = c(0, max(pop), 100),
+                  drawNodes = FALSE)
+title("Time = 7")
+draw_thematic_OCN(pop[,10], OCNwe, colLevels = c(0, max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 10")
-draw_thematic_OCN(pop[,20], OCNwe, colLevels = c(0, max(pop0), 100),
-                  drawNodes = FALSE)
-title("Time = 20")
 ```
 
+#找到河流关键节点
+```{r}
+#根据一个上游节点连接的下游节点数量以及这些下游河段的长度来赋予这个上游节点一个权重
+# 初始化每个节点的权重为0
+node_weights <- numeric(length(OCNwe$RN$downNode))
+
+# 遍历每个节点计算权重
+for (i in seq_along(OCNwe$RN$downNode)) {
+  # 找到当前节点直接下游的所有节点
+  downstream_nodes <- which(OCNwe$RN$downNode == i)
+  # 计算下游节点的数量
+  num_downstream <- length(downstream_nodes)
+  # 如果有下游节点，累加这些下游节点的河段长度
+  if (num_downstream > 0) {
+    total_length_downstream <- sum(OCNwe$RN$leng[downstream_nodes])
+    # 以下游节点数量和下游河段长度总和的乘积为例计算权重
+    node_weights[i] <- num_downstream * total_length_downstream/1000
+  }
+}
+# Assuming draw_thematic_OCN can be adapted or is suitable for this purpose
+draw_thematic_OCN(node_weights, OCNwe, colLevels = c(0, max(node_weights), 100),
+                  drawNodes = FALSE)  # Ensure drawNodes is set appropriately
+title("Node Weights Representation")
+
+
+
+
+```
+```{r}
+#Influence[d(i)]=Influence[d(i)]+Influence[i]×(upstreamInfluenceWeight)^l
+#这里Influence}[i]表示节点i当前的影响力值，upstreamInfluenceWeight是上游节点对下游节点的影响力权重，l是从节点i到达下游节点的层级数，d(i)是节点i的直接下游节点。
+calculateInfluenceDynamically <- function(connectivity, upstreamInfluenceWeight, OCNwe) {
+  # 初始化每个节点的影响力为1
+  influences <- rep(1, length(OCNwe$RN$downNode))
+  # 通过全网络遍历，逐个更新节点影响力
+  for (currentLevel in 1:connectivity) {
+    for (node in 1:length(OCNwe$RN$downNode)) {
+      downstreamNode <- OCNwe$RN$downNode[node]
+      # 检查下游节点是否存在
+      if (!is.na(downstreamNode) && downstreamNode != 0) {
+        # 使用当前节点的影响力和权重计算下游节点的影响力增量
+        influences[downstreamNode] <- influences[downstreamNode] + influences[node] * (upstreamInfluenceWeight ^ currentLevel)
+      }
+    }
+  }
+  
+  return(influences)
+}
+
+influence_results <- calculateInfluenceDynamically(connectivity=10, upstreamInfluenceWeight=1, OCNwe)
+normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+
+hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
+hist(normalized_influences, main="Distribution of Normalized Influence Weights", xlab="Normalized Influence Weight", breaks=20)
+#这是河流影响权重，可以与density pop结合起来，更大的influence weight有更多的pop
+
+# Assuming draw_thematic_OCN can be adapted or is suitable for this purpose
+draw_thematic_OCN(normalized_influences, OCNwe, colLevels = c(0.4, max(normalized_influences), 100),
+                  drawNodes = FALSE)  # Ensure drawNodes is set appropriately
+title("Node Normalized Weights Representation")
+```
+
+```{r}
+#upstreamInfluenceWeight值从0到1，步长为0.1的变化结果
+library(ggplot2)
+# 初始化一个空的数据框来存储结果
+results_df <- data.frame(Influence = numeric(), Weight = factor())
+# 遍历upstreamInfluenceWeight值从0到1，步长为0.1
+for (weight in seq(0.1, 1, by=0.1)) {
+  influence_results <- calculateInfluenceDynamically(connectivity=10, upstreamInfluenceWeight=weight, OCNwe)
+  normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+  # 将当前权重下的影响力结果添加到数据框
+  results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Weight = as.factor(sprintf("%.1f", weight))))
+}
+ggplot(results_df, aes(x = Influence, fill = Weight)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_brewer(palette = "Spectral") +
+  labs(title = "Normalized Influence Distribution by Upstream Influence Weight",
+       x = "Normalized Influence",
+       y = "Density",
+       fill = "Upstream Influence\nWeight") +
+  coord_cartesian(ylim = c(0, 15)) +  # 可能需要根据你的数据调整这个范围
+  theme_minimal()
+
+
+
+
+```
+```{r}
+library(ggplot2)
+library(plotly)
+results_df <- data.frame(Influence = numeric(), Connectivity = factor())
+
+# 遍历connectivity值从1到10
+for (conn in 1:10) {
+  influence_results <- calculateInfluenceDynamically(connectivity=conn, upstreamInfluenceWeight=0.5, OCNwe)
+  normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+  
+  # 将当前connectivity下的影响力结果添加到数据框
+  results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Connectivity = as.factor(conn)))
+}
+
+gg_plot <- ggplot(results_df, aes(x = Influence, fill = Connectivity)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_brewer(palette = "Spectral") +
+  labs(title = "Normalized Influence Distribution by Connectivity",
+       x = "Normalized Influence",
+       y = "Density",
+       fill = "Connectivity") +
+  theme_minimal()
+
+# 将ggplot对象转换为plotly对象
+plotly_plot <- ggplotly(gg_plot)
+
+# 显示交互式图表
+plotly_plot
+```
 
