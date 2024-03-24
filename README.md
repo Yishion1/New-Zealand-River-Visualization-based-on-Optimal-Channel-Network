@@ -35,3 +35,10 @@ Thus the mobility can be seen as 0.68*Timestep/day
 
 
 To do： 根据 Density Trout /Km 里面的数据，去掉outlier， 然后模拟曲线来计算生殖率
+
+# 3.24：
+#Influence[d(i)]=Influence[d(i)]+Influence[i]×(upstreamInfluenceWeight)^l
+#这里Influence}[i]表示节点i当前的影响力值，upstreamInfluenceWeight是上游节点对下游节点的影响力权重，l是从节点i到达下游节点的层级数，d(i)是节点i的直接下游节点。
+新增函数 calculateInfluenceDynamically <- function(connectivity, upstreamInfluenceWeight, OCNwe)
+分析了weight和connectivity对权重分布的影响
+to do 把权重与pop的density结合起来得到模拟的种群数量数据
