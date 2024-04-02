@@ -1,0 +1,402 @@
+---
+title: "weighted_river_for_REC"
+author: "Yifan Wang"
+date: "2024-03-30"
+output: html_document
+---
+```{r}
+library(sf)
+library(dplyr)
+library(mapview)
+library(riverdist)
+library(webshot)
+library(OCNet)
+library(rivnet)
+library(stringr)
+#ID=263375
+ID=98018
+findConnected <- function(targetID, riverLines, visited = numeric()) {
+  # 初始化一个队列，存放当前层级待访问的节点
+  queue <- c(targetID)
+  while (length(queue) > 0) {
+    # 取出队列的第一个元素
+    currentID <- queue[1]
+    queue <- queue[-1]
+    # 检查是否遇到结束标志
+    if(currentID == -1) {
+      next # 跳过当前迭代
+    }
+    # 将当前节点添加到已访问列表
+    if (!currentID %in% visited) {
+      visited <- c(visited, currentID)
+      # 找到所有下游节点，即当前节点作为NextDownID的节点
+      downstreamIDs <- riverLines$HydroID[riverLines$NextDownID == currentID]
+      
+      # 找到所有上游节点，即当前节点的HydroID在其他节点的NextDownID中的节点
+      upstreamIDs <- riverLines$NextDownID[riverLines$HydroID == currentID]
+      
+      # 将未访问的下游和上游节点添加到队列中
+      for (id in c(downstreamIDs, upstreamIDs)) {
+        if (!id %in% visited ) { # 确保不将结束标志或已访问的节点添加到队列
+          queue <- c(queue, id)
+        }
+      }
+    }
+  }
+  
+  # 移除列表中的-1，如果存在
+  visited <- visited[visited != -1]
+  
+  return(visited)
+}
+
+# 使用定义的函数，从HydroID=98753开始找到所有相连的河流段
+connected_hydroIDs <- findConnected(ID, riverLines)
+
+# 输出找到的HydroID数量
+cat("Found connected HydroIDs count:", length(connected_hydroIDs), "\n")
+
+# 如果你想获取这些HydroID对应的完整行数据，可以使用以下代码
+connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+connected_river_segments<-connected_river_segments%>%filter(StreamOrde!=1)
+```
+
+#数据处理，提取出新的dataframe
+```{r}
+connected_river_segments$MidPointX <- (connected_river_segments$upcoordX + connected_river_segments$downcoordX) / 2
+connected_river_segments$MidPointY <- (connected_river_segments$upcoordY + connected_river_segments$downcoordY) / 2
+
+# 创建新的DataFrame，只包含所需列
+final_river_segments <- connected_river_segments[, c("HydroID", "NextDownID", "MidPointX", "MidPointY","nzsegment","Shape_Leng")]
+mapview(final_river_segments)
+```
+
+
+
+
+
+#得到反向追溯的序列
+```{r}
+get_traceback_REC <- function(connectivity, final_river_segments) {
+  # 初始化存储追溯结果的列表
+  traceback_results <- vector("list", nrow(final_river_segments))
+  
+  for (node in seq_len(nrow(final_river_segments))) {
+    HydroID <- final_river_segments$HydroID[node]
+    current_neighbors <- final_river_segments$HydroID[final_river_segments$NextDownID == HydroID]
+    path <- numeric(0)  # 初始化路径
+    path <- c(path, HydroID)  # 将当前节点加入路径
+    
+    for (i in 1:connectivity) {
+      if (length(current_neighbors) == 0) break  # 如果没有上游邻居，结束追溯
+      
+      # 计算到所有上游邻居的距离并选择最近的
+      distances <- sapply(current_neighbors, function(n) {
+        upNodeIndex <- match(n, final_river_segments$HydroID)
+        sqrt((final_river_segments$MidPointX[upNodeIndex] - final_river_segments$MidPointX[node])^2 + 
+             (final_river_segments$MidPointY[upNodeIndex] - final_river_segments$MidPointY[node])^2)
+      })
+      selected_neighbor <- current_neighbors[which.min(distances)]
+      
+      # 将选中的邻居加入路径
+      path <- c(path, selected_neighbor)
+      
+      # 更新邻居列表：移除选中的邻居，并加入其上游节点
+      current_neighbors <- setdiff(current_neighbors, selected_neighbor)
+      new_neighbors <- final_river_segments$HydroID[final_river_segments$NextDownID == selected_neighbor]
+      current_neighbors <- unique(c(current_neighbors, new_neighbors))
+    }
+    
+    traceback_results[[node]] <- path
+  }
+  
+  # 转换追溯路径列表为矩阵，处理不同长度的路径
+  traceback_matrix <- do.call(rbind, lapply(traceback_results, function(x) {
+    c(x, rep(NA, max(sapply(traceback_results, length)) - length(x)))
+  }))
+  
+  return(traceback_matrix)
+}
+# 使用示例
+# 假设OCNwe_test是你的数据
+traceback_matrix <- get_traceback_REC(connectivity = 4, final_river_segments)
+
+# 打印结果
+print(traceback_matrix)
+
+```
+
+#计算traceback path上的step
+```{r}
+calculate_steps_to_downstream_REC<- function(traceback_matrix, final_river_segments) {
+  steps_matrix <- matrix(NA, nrow = nrow(traceback_matrix), ncol = ncol(traceback_matrix))
+  # 创建HydroID到NextDownID的映射
+  next_down_mapping <- setNames(final_river_segments$NextDownID, final_river_segments$HydroID)
+  
+  for (i in 1:nrow(traceback_matrix)) {
+    current_row <- na.omit(traceback_matrix[i, ])
+    steps_matrix[i, 1] <- 0  # 设置源头节点的步数为0
+    
+    for (j in 2:length(current_row)) {
+      steps <- 0
+      current_node <- current_row[j]
+      
+      # 循环直到找不到下一个节点，或遇到源头节点，或current_node为NA
+      while (!is.na(current_node) && current_node != -1 && current_node != current_row[1]) {
+        if (!is.na(next_down_mapping[as.character(current_node)])) {
+          current_node <- next_down_mapping[as.character(current_node)]
+          steps <- steps + 1  # 只有当我们确实找到下一个节点时，才增加步数
+          if (current_node == current_row[1]) {
+            break
+          }
+        } else {
+          # 如果在映射中找不到下一个节点，说明无法继续追踪，设置为NA并跳出循环
+          current_node <- NA
+          break
+        }
+      }
+      
+      if (!is.na(current_node) && current_node == current_row[1]) {
+        steps_matrix[i, j] <- steps
+      } else {
+        steps_matrix[i, j] <- NA
+      }
+    }
+  }
+  
+  return(steps_matrix)
+}
+
+steps_matrix <- calculate_steps_to_downstream_REC(traceback_matrix, final_river_segments)
+print(steps_matrix)
+```
+
+```{r}
+get_source_node_REC <- function(final_river_segments) {
+    # 找到所有被其他节点指向的节点（即有上游的节点）
+    downstream_nodes <- unique(na.omit(final_river_segments$NextDownID[final_river_segments$NextDownID != -1]))
+    
+    # 找到所有节点
+    all_nodes <- unique(final_river_segments$HydroID)
+    
+    # 找出没有上游的节点（源头节点）
+    source_nodes <- setdiff(all_nodes, downstream_nodes)
+    
+    return(source_nodes)
+}
+
+# 示例使用
+source_nodes <- get_source_node_REC(final_river_segments)
+```
+
+
+```{r}
+calculateInfluenceDynamically_REC <- function(final_river_segments, upstreamInfluenceWeight, connectivity) {
+    source_nodes <- get_source_node_REC(final_river_segments)  # 假设这个函数返回一个包含源头节点HydroID的向量
+    traceback_matrix <- get_traceback_REC(connectivity, final_river_segments)
+    steps_matrix <- calculate_steps_to_downstream_REC(traceback_matrix, final_river_segments)
+    
+    influences <- rep(1, nrow(final_river_segments))
+    names(influences) <- as.character(final_river_segments$HydroID)
+    
+    nodes_queue <- as.list(source_nodes)  # 初始化节点队列为列表形式
+    calculated_nodes <- vector("list", 0)  # 初始化已计算节点列表为空列表
+    
+    while (length(nodes_queue) > 0) {
+        current_node <- nodes_queue[[1]]  # 取出队列的第一个节点
+        nodes_queue <- nodes_queue[-1]  # 更新队列
+        
+        # 如果当前节点未被计算过
+        if (!(current_node %in% unlist(calculated_nodes))) {
+            calculated_nodes <- c(calculated_nodes, list(current_node))  # 标记为已计算
+            
+            rows <- which(traceback_matrix[, 1] == as.numeric(current_node))
+            for (row in rows) {
+                for (col in 2:ncol(traceback_matrix)) {
+                    upstream_node <- traceback_matrix[row, col]
+                    step <- steps_matrix[row, col]
+                    if (!is.na(upstream_node) && step > 0 && upstream_node %in% names(influences)) {
+                        influences[current_node] <- influences[current_node] + influences[as.character(upstream_node)] * (upstreamInfluenceWeight ^ step)
+                    }
+                }
+            }
+            
+            downstream_nodes <- final_river_segments$NextDownID[final_river_segments$HydroID == as.numeric(current_node)]
+            if (!is.na(downstream_nodes) && downstream_nodes != -1 && !(as.character(downstream_nodes) %in% unlist(calculated_nodes))) {
+                nodes_queue <- c(nodes_queue, list(as.character(downstream_nodes)))  # 将下游节点加入队列
+            }
+        }
+    }
+    
+    return(influences)
+}
+
+influence_results <- calculateInfluenceDynamically_REC(upstreamInfluenceWeight=0.4, final_river_segments,connectivity = 20)
+normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+
+hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
+hist(normalized_influences, main="Distribution of Normalized Influence Weights", xlab="Normalized Influence Weight", breaks=20)
+#这是河流影响权重，可以与density pop结合起来，更大的influence weight有更多的pop
+
+influences_df <- data.frame(HydroID = names(influences), InfluenceValue = normalized_influences, stringsAsFactors = FALSE)
+
+# 将 influences 数据合并到 connected_river_segments 中
+connected_river_segments <- merge(final_river_segments, influences_df, by = "HydroID", all.x = TRUE)
+mapview(connected_river_segments, 
+        zcol = 'InfluenceValue', 
+        col.regions=mapviewGetOption("raster.palette"))
+```
+
+```{r}
+#upstreamInfluenceWeight值从0到1，步长为0.1的变化结果
+library(ggplot2)
+# 初始化一个空的数据框来存储结果
+results_df <- data.frame(Influence = numeric(), Weight = factor())
+# 遍历upstreamInfluenceWeight值从0到1，步长为0.1
+for (weight in seq(0.1, 1, by=0.1)) {
+  influence_results <- calculateInfluenceDynamically_REC(connectivity=10, upstreamInfluenceWeight=weight, final_river_segments)
+  normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+  # 将当前权重下的影响力结果添加到数据框
+  results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Weight = as.factor(sprintf("%.1f", weight))))
+}
+ggplot(results_df, aes(x = Influence, fill = Weight)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_brewer(palette = "Spectral") +
+  labs(title = "Normalized Influence Distribution by Upstream Influence Weight",
+       x = "Normalized Influence",
+       y = "Density",
+       fill = "Upstream Influence\nWeight") +
+  coord_cartesian(ylim = c(0, 15)) +  # 可能需要根据你的数据调整这个范围
+  theme_minimal()
+```
+```{r}
+library(ggplot2)
+library(plotly)
+results_df <- data.frame(Influence = numeric(), Connectivity = factor())
+
+# 遍历connectivity值从1到10
+for (conn in seq(1,20,6)) {
+  influence_results <- calculateInfluenceDynamically_REC(connectivity=conn, upstreamInfluenceWeight=0.7, final_river_segments)
+  normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+  
+  # 将当前connectivity下的影响力结果添加到数据框
+  results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Connectivity = as.factor(conn)))
+}
+
+gg_plot <- ggplot(results_df, aes(x = Influence, fill = Connectivity)) +
+  geom_density(alpha = 0.7) +
+  scale_fill_brewer(palette = "Spectral") +
+  labs(title = "Normalized Influence Distribution by Connectivity",
+       x = "Normalized Influence",
+       y = "Density",
+       fill = "Connectivity") +
+  theme_minimal()
+
+# 将ggplot对象转换为plotly对象
+plotly_plot <- ggplotly(gg_plot)
+
+# 显示交互式图表
+plotly_plot
+```
+
+#运用平流扩散模型
+```{r}
+#读取水质数据
+shapefilePath_water_quality <- "D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp"
+
+# 读取整个Shapefile
+riverLines_water_quality <- st_read(shapefilePath_water_quality)
+
+# 选择特定的字段  /Ammoniacal nitrogen /Ammoniacal nitrogen (adjusted) /Nitrate-nitrite nitrogen    /Total nitrogen 
+riverLines_water_quality <- riverLines_water_quality %>%
+  select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(mesrmnt == "95th",strm_rd>=1)%>%
+  rename(nzsegment = nzsgmnt)
+
+selected_riverLines_water_quality_df <- as.data.frame(riverLines_water_quality)
+# 从selected_riverLines_water_quality_df中选择需要的列
+selected_columns <- selected_riverLines_water_quality_df %>%
+  select(nzsegment, measure, value)
+
+# 执行合并
+final_merged_df <- final_river_segments %>%
+  left_join(selected_columns, by = "nzsegment")
+
+# 如果final_river_segments原本是sf对象，并且你希望结果也是sf对象
+final_segments_waterquality <- st_as_sf(final_merged_df)
+rm(riverLines_water_quality)
+```
+
+
+
+```{r}
+library(deSolve)
+
+simulate_pollution_with_advection_diffusion <- function(river_segments, initial_HydroID, u, D) {
+  create_path <- function(segments, start_id) {
+    path <- c(start_id)
+    current_id <- start_id
+    repeat {
+      next_id <- segments$NextDownID[segments$HydroID == current_id]
+      if(is.na(next_id) || next_id == -1 || next_id %in% path) break
+      path <- c(path, next_id)
+      current_id <- next_id
+    }
+    return(path)
+  }
+  
+  path <- create_path(river_segments, initial_HydroID)
+  
+  segment_lengths <- river_segments %>%
+    filter(HydroID %in% path) %>%
+    arrange(match(HydroID, path)) %>%
+    .$Shape_Leng
+  
+  concentrations <- river_segments %>%
+    filter(HydroID %in% path) %>%
+    arrange(match(HydroID, path)) %>%
+    .$value
+  
+  model_results <- list()
+  
+  # 为每个河段定义单独的时间步长
+  dx <- min(segment_lengths)/5  # 假设最小河段长度被等分为100个小段，用作空间步长
+  dt <- 5  # 根据CFL条件确定时间步长
+  
+  for (i in seq_along(path)) {
+    segment_id <- path[i]
+    segment_length <- segment_lengths[i]
+    
+    # 检查CFL条件
+    cfl_condition <- u * dt / dx <= 1
+    if (!cfl_condition) {
+      stop("CFL condition not satisfied: Decrease dt or increase dx.")
+    }
+    
+    solve_advection_diffusion <- function(segment_length, u, D, C0) {
+      x_seq <- seq(0, segment_length, by = dx)
+      concentrations <- numeric(length(x_seq))
+      concentrations[1] <- C0
+      
+      for (j in 2:length(x_seq)) {
+        dCdx <- diff(c(0, concentrations[j-1], 0)) / dx
+        d2Cdx2 <- diff(c(0, dCdx, 0)) / dx
+        concentrations[j] <- concentrations[j-1] + dt * (-u * dCdx + D * d2Cdx2)
+      }
+      
+      return(concentrations)
+    }
+    
+    C0 <- if(i == 1) concentrations[i] else model_results[[i-1]][length(model_results[[i-1]])]
+    concentrations <- solve_advection_diffusion(segment_length, u, D, C0)
+    model_results[[i]] <- concentrations
+  }
+  
+  return(model_results)
+}
+
+# 运行模拟
+results <- simulate_pollution_with_advection_diffusion(river_segments = final_segments_waterquality,initial_HydroID = 97970,u =1,  D=0.1 )
+head(results)
+# 可视化结果
+```
+
