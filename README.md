@@ -46,3 +46,8 @@ to do 把权重与pop的density结合起来得到模拟的种群数量数据
 
 # 4.2
 尝试一维河流传播模型，但是偏微分求解遇到问题，无法计算。 明天尝试自定义河流权重函数，用户可自定义每个支流的初始influence，尝试融入污染数据
+
+
+# 4.3
+OCN aggregate 的时候应该选择较小的值，就可以避免influences计算时间过长。完成weighted river的population 模拟。
+To do:写证明文档
