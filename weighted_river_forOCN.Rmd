@@ -1,0 +1,210 @@
+---
+title: "weighted river"
+author: "Yifan Wang"
+date: "2024-03-29"
+output: html_document
+---
+
+
+
+
+```{r }
+library(sf)
+library(dplyr)
+library(mapview)
+library(riverdist)
+library(webshot)
+library(OCNet)
+library(rivnet)
+library(stringr)
+
+OCNwe_test <- create_OCN(20, 20, outletPos = 3, cellsize = 500)
+par(mai=c(0,0,0,0))
+draw_simple_OCN(OCNwe_test)
+OCNwe_test <- landscape_OCN(OCNwe_test, slope0 = 0.01)
+thr <- find_area_threshold_OCN(OCNwe_test)
+# find index corresponding to thr$Nnodes ~= 20
+indThr <- which(abs(thr$nNodesAG - 20) == min(abs(thr$nNodesAG - 20)))
+indThr <- max(indThr) # pick the last ind_thr that satisfies the condition above
+thrA20 <- thr$thrValues[indThr] # corresponding threshold area
+OCNwe_test <- aggregate_OCN(OCNwe_test, thrA = thrA20)
+
+
+# Assuming draw_thematic_OCN can be adapted or is suitable for this purpose
+draw_thematic_OCN(seq(1,62), OCNwe_test, colLevels = c(0, 62, 100),
+                  drawNodes = FALSE)  # Ensure drawNodes is set appropriately
+title("Node Weights Representation")
+```
+
+#得到反向追溯的序列
+```{r}
+get_traceback <- function(connectivity, OCNwe) {
+  # 初始化存储追溯结果的列表
+  traceback_results <- vector("list", length(OCNwe$RN$downNode))
+  
+  for (node in seq_along(OCNwe$RN$downNode)) {
+    current_neighbors <- which(OCNwe$RN$downNode == node) # 找到当前节点的所有直接上游邻居
+    path <- numeric(0) # 初始化路径
+    path <- c(path, node) # 将当前节点加入路径
+    
+    for (i in 1:connectivity) {
+      if (length(current_neighbors) == 0) break # 如果没有上游邻居，结束追溯
+      
+      # 计算到所有上游邻居的距离并选择最近的
+      distances <- sapply(current_neighbors, function(n) {
+        sqrt((OCNwe$RN$X[n] - OCNwe$RN$X[node])^2 + (OCNwe$RN$Y[n] - OCNwe$RN$Y[node])^2)
+      })
+      selected_neighbor <- current_neighbors[which.min(distances)]
+      
+      # 将选中的邻居加入路径
+      path <- c(path, selected_neighbor)
+      
+      # 更新邻居列表：移除选中的邻居，并加入其上游节点
+      current_neighbors <- setdiff(current_neighbors, selected_neighbor)
+      new_neighbors <- which(OCNwe$RN$downNode == selected_neighbor)
+      current_neighbors <- unique(c(current_neighbors, new_neighbors))
+    }
+    
+    traceback_results[[node]] <- path
+  }
+  
+  # 转换追溯路径列表为矩阵，处理不同长度的路径
+  traceback_matrix <- do.call(rbind, lapply(traceback_results, function(x) {
+    c(x, rep(NA, connectivity + 1 - length(x)))
+  }))
+  
+  return(traceback_matrix)
+}
+
+
+
+
+# 使用示例
+# 假设OCNwe_test是你的数据
+traceback_matrix <- get_traceback(connectivity = 4, OCNwe = OCNwe_test)
+
+# 打印结果
+print(traceback_matrix)
+
+
+
+
+```
+#计算traceback path上的step
+```{r}
+calculate_steps_to_downstream <- function(traceback_matrix, OCNwe) {
+  # 初始化一个矩阵用于存储步数，尺寸与traceback_matrix相同
+  steps_matrix <- matrix(NA, nrow = nrow(traceback_matrix), ncol = ncol(traceback_matrix))
+  
+  # 对每行数据进行处理
+  for (i in 1:nrow(traceback_matrix)) {
+    # 获取当前行且排除NA值
+    current_row <- na.omit(traceback_matrix[i, ])
+    # 对当前行中的每个节点计算到下游节点的步数
+    for (j in 1:length(current_row)) {
+      if(j == 1) {
+        steps_matrix[i, j] <- 0 # 行首节点的步数为0
+      } else {
+        current_node <- current_row[j]
+        steps <- 0
+        found <- FALSE
+        # 往下游节点寻找，计算步数
+        while(!found && current_node != 0) {
+          current_node <- OCNwe$RN$downNode[current_node]
+          steps <- steps + 1
+          if(current_node == current_row[1] || current_node == 0) {
+            found <- TRUE
+          }
+        }
+        if(found) {
+          steps_matrix[i, j] <- steps
+        } else {
+          steps_matrix[i, j] <- NA  # 如果未找到路径，则标记为NA
+        }
+      }
+    }
+  }
+  return(steps_matrix)
+}
+
+# 测试示例
+steps_matrix <- calculate_steps_to_downstream(traceback_matrix, OCNwe_test)
+print(steps_matrix)
+```
+#得到RN levelwe源头节点
+```{r}
+get_source_node <- function(OCNwe){
+  # 找到没有上游的节点（源头节点）
+  potential_upstream_nodes <- unique(OCNwe$RN$downNode[OCNwe$RN$downNode != 0])
+  all_nodes <- seq_len(max(OCNwe$RN$downNode, na.rm = TRUE))
+  currentLayerNodes <- setdiff(all_nodes, potential_upstream_nodes)
+  return(currentLayerNodes)
+}
+get_source_node(OCNwe)
+```
+```{r}
+
+calculateInfluenceDynamically <- function(OCNwe, upstreamInfluenceWeight, traceback_matrix, steps_matrix) {
+    source_nodes <- get_source_node(OCNwe)  # 获取源头节点
+    influences <- rep(1, length(OCNwe$RN$downNode))  # 初始化每个节点的影响力为1
+    nodes_queue <- source_nodes  # 初始化队列，首先包含所有源头节点
+    calculated_nodes <- list()  # 初始化已计算节点列表为列表
+    
+    while (length(nodes_queue) > 0) {
+        current_node <- nodes_queue[1]  # 取出队列的第一个节点
+        nodes_queue <- nodes_queue[-1]  # 更新队列
+
+        # 标记当前节点为已计算
+        calculated_nodes[[length(calculated_nodes) + 1]] <- current_node
+
+        # 根据traceback_matrix计算影响力
+        rows <- which(traceback_matrix[, 1] == current_node)
+        all_upstream_calculated <- TRUE
+        for (row in rows) {
+            upstream_nodes <- na.omit(traceback_matrix[row, 2:ncol(traceback_matrix)])  # 获取所有上游节点
+            for (upstream_node in upstream_nodes) {
+                if (!is.element(upstream_node, calculated_nodes)) {
+                    all_upstream_calculated <- FALSE
+                    break
+                }
+            }
+            
+            if (all_upstream_calculated) {
+                for (upstream_node in upstream_nodes) {
+                    col_index <- which(traceback_matrix[row, ] == upstream_node)  # 找到上游节点对应的列
+                    step <- steps_matrix[row, col_index]
+                    if (step > 0) {
+                        influences[current_node] <- influences[current_node] + influences[upstream_node] * (upstreamInfluenceWeight ^ step)
+                    }
+                }
+            } else {
+                nodes_queue <- c(nodes_queue, current_node)  # 将当前节点重新加入队列以便后续再次尝试计算
+                break  # 跳出循环，处理队列中的下一个节点
+            }
+        }
+
+        # 添加直接下游节点到队列，如果尚未加入且未计算
+        downstream_node <- OCNwe$RN$downNode[current_node]
+        if (!is.na(downstream_node) && downstream_node != 0 && !is.element(downstream_node, calculated_nodes) && !downstream_node %in% nodes_queue) {
+            nodes_queue <- c(nodes_queue, downstream_node)
+        }
+    }
+    
+    return(influences)
+}
+
+
+influence_results <- calculateInfluenceDynamically(upstreamInfluenceWeight=0.5, OCNwe_test,traceback_matrix, steps_matrix)
+#归一化处理，把最大的值设定为1，看值的分布情况
+normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
+
+hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
+hist(normalized_influences, main="Distribution of Normalized Influence Weights", xlab="Normalized Influence Weight", breaks=20)
+#这是河流影响权重，可以与density pop结合起来，更大的influence weight有更多的pop
+
+# Assuming draw_thematic_OCN can be adapted or is suitable for this purpose
+draw_thematic_OCN(normalized_influences, OCNwe_test, colLevels = c(0.4, max(normalized_influences), 100),
+                  drawNodes = FALSE)  # Ensure drawNodes is set appropriately
+title("Node Normalized Weights Representation")
+```
+

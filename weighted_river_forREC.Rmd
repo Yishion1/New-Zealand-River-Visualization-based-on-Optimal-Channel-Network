@@ -191,12 +191,16 @@ source_nodes <- get_source_node_REC(final_river_segments)
 
 
 ```{r}
-calculateInfluenceDynamically_REC <- function(final_river_segments, upstreamInfluenceWeight, connectivity) {
+calculateInfluenceDynamically_REC <- function(final_river_segments, upstreamInfluenceWeight, connectivity, influences) {
     source_nodes <- get_source_node_REC(final_river_segments)  # 假设这个函数返回一个包含源头节点HydroID的向量
     traceback_matrix <- get_traceback_REC(connectivity, final_river_segments)
     steps_matrix <- calculate_steps_to_downstream_REC(traceback_matrix, final_river_segments)
     
     influences <- rep(1, nrow(final_river_segments))
+    if(length(influences)!=nrow(final_river_segments)){
+      print("The length of influences is not equal to the length of final_river_segments")
+      break
+    }
     names(influences) <- as.character(final_river_segments$HydroID)
     
     nodes_queue <- as.list(source_nodes)  # 初始化节点队列为列表形式
@@ -231,7 +235,10 @@ calculateInfluenceDynamically_REC <- function(final_river_segments, upstreamInfl
     return(influences)
 }
 
-influence_results <- calculateInfluenceDynamically_REC(upstreamInfluenceWeight=0.4, final_river_segments,connectivity = 20)
+
+water_quality_influences <- final_segments_waterquality$value
+
+influence_results <- calculateInfluenceDynamically_REC(upstreamInfluenceWeight=0.1, final_river_segments = final_segments_waterquality,connectivity = 20,influences = water_quality_influences)
 normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
 
 hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
@@ -248,18 +255,19 @@ mapview(connected_river_segments,
 ```
 
 ```{r}
+library(plotly)
 #upstreamInfluenceWeight值从0到1，步长为0.1的变化结果
 library(ggplot2)
 # 初始化一个空的数据框来存储结果
 results_df <- data.frame(Influence = numeric(), Weight = factor())
 # 遍历upstreamInfluenceWeight值从0到1，步长为0.1
 for (weight in seq(0.1, 1, by=0.1)) {
-  influence_results <- calculateInfluenceDynamically_REC(connectivity=10, upstreamInfluenceWeight=weight, final_river_segments)
+  influence_results <- calculateInfluenceDynamically_REC(connectivity=10, upstreamInfluenceWeight=weight, final_river_segments = final_segments_waterquality,influences = water_quality_influences)
   normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
   # 将当前权重下的影响力结果添加到数据框
   results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Weight = as.factor(sprintf("%.1f", weight))))
 }
-ggplot(results_df, aes(x = Influence, fill = Weight)) +
+ggplot<-ggplot(results_df, aes(x = Influence, fill = Weight)) +
   geom_density(alpha = 0.7) +
   scale_fill_brewer(palette = "Spectral") +
   labs(title = "Normalized Influence Distribution by Upstream Influence Weight",
@@ -268,6 +276,11 @@ ggplot(results_df, aes(x = Influence, fill = Weight)) +
        fill = "Upstream Influence\nWeight") +
   coord_cartesian(ylim = c(0, 15)) +  # 可能需要根据你的数据调整这个范围
   theme_minimal()
+# 将ggplot对象转换为plotly对象
+plotly_plot <- ggplotly(ggplot)
+
+# 显示交互式图表
+plotly_plot
 ```
 ```{r}
 library(ggplot2)
@@ -298,6 +311,65 @@ plotly_plot <- ggplotly(gg_plot)
 # 显示交互式图表
 plotly_plot
 ```
+
+#meta-pop model
+```{r}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #运用平流扩散模型
 ```{r}

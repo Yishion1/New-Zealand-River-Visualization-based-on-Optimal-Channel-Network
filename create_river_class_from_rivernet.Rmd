@@ -29,8 +29,8 @@ riverLines <- st_read(shapefilePath)
 #查询特定ID的连接网络
 
 ```{r}
-ID=263375
-#ID=98018
+#ID=263375
+ID=98018
 findConnected <- function(targetID, riverLines, visited = numeric()) {
   # 初始化一个队列，存放当前层级待访问的节点
   queue <- c(targetID)
@@ -72,8 +72,13 @@ connected_hydroIDs <- findConnected(ID, riverLines)
 # 输出找到的HydroID数量
 cat("Found connected HydroIDs count:", length(connected_hydroIDs), "\n")
 
+
+
 # 如果你想获取这些HydroID对应的完整行数据，可以使用以下代码
 connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+set.seed(123) # 为了可重复性
+connected_river_segments$Value <- runif(nrow(connected_river_segments), min = 0, max = 100)
+mapview(connected_river_segments%>%filter(StreamOrde!=1), zcol = 'Value', col.regions = colorRampPalette(c("blue", "yellow", "red"))(100))
 mapview(connected_river_segments%>%filter(StreamOrde!=1))
 
 ```
@@ -130,8 +135,8 @@ thr <- find_area_threshold_OCN(r2)
 #calculation the elevation of the lowest pixel(according to the landscape_OCN)
 
 
-# find index corresponding to thr$Nnodes ~= 318
-indThr <- which(abs(thr$nNodesAG - 318) == min(abs(thr$nNodesAG - 318)))
+# find index corresponding to thr$Nnodes ~= 
+indThr <- which(abs(thr$nNodesAG - 70) == min(abs(thr$nNodesAG - 70)))
 indThr <- max(indThr) # pick the last ind_thr that satisfies the condition above
 thrA20 <- thr$thrValues[indThr] # corresponding threshold area
 OCNwe <- aggregate_OCN(r2, thrA = thrA20)
@@ -143,7 +148,8 @@ points(OCNwe$AG$X,OCNwe$AG$Y, pch = 21, col = "blue", bg = "blue")
 
 OCNwe <- rivergeometry_OCN(OCNwe, widthMax = 5)   # evaluate river width 
 K <- 10*OCNwe$RN$width                             # calculate carrying capacity 
-pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000  # initial random population vector
+#pop0 <- sample_from_density(density_data, n = OCNwe$RN$nNodes)*OCNwe$RN$leng/1000  # initial random population vector
+pop0<-weighted_pop0
 nTimestep <- 10                                   # number of timesteps
 r <- 1+average_annual_growth_rate                    # proliferation rate
 pd <- 0.8                                         # probability to move downstream
@@ -195,16 +201,16 @@ plot(colSums(pop), type = "l", xlab = "Time", ylab = "Population", lwd = 2, ylim
 lines(c(1, nTimestep), c(sum(K),sum(K)), lty = 2)
 title("Evolution of metapop. size")
 par(mfrow = c(2, 2), mai = c(0.1, 0, 0.2, 0))
-draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0, max(pop), 100),
+draw_thematic_OCN(pop[,1], OCNwe, colLevels = c(0.5*max(pop), max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 1")
-draw_thematic_OCN(pop[,3], OCNwe, colLevels = c(0, max(pop), 100),
+draw_thematic_OCN(pop[,3], OCNwe, colLevels = c(0.5*max(pop), max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 3")
-draw_thematic_OCN(pop[,7], OCNwe, colLevels = c(0, max(pop), 100),
+draw_thematic_OCN(pop[,7], OCNwe, colLevels = c(0.4*max(pop), max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 7")
-draw_thematic_OCN(pop[,10], OCNwe, colLevels = c(0, max(pop), 100),
+draw_thematic_OCN(pop[,10], OCNwe, colLevels = c(0.5*max(pop), max(pop), 100),
                   drawNodes = FALSE)
 title("Time = 10")
 ```
@@ -240,35 +246,12 @@ title("Node Weights Representation")
 ```{r}
 #Influence[d(i)]=Influence[d(i)]+Influence[i]×(upstreamInfluenceWeight)^l
 #这里Influence}[i]表示节点i当前的影响力值，upstreamInfluenceWeight是上游节点对下游节点的影响力权重，l是从节点i到达下游节点的层级数，d(i)是节点i的直接下游节点。
-calculateInfluenceDynamically <- function(connectivity, upstreamInfluenceWeight, OCNwe) {
-  # 初始化每个节点的影响力为1
-  influences <- rep(1, length(OCNwe$RN$downNode))
-  # 通过全网络遍历，逐个更新节点影响力
-  for (currentLevel in 1:connectivity) {
-    for (node in 1:length(OCNwe$RN$downNode)) {
-      downstreamNode <- OCNwe$RN$downNode[node]
-      # 检查下游节点是否存在
-      if (!is.na(downstreamNode) && downstreamNode != 0) {
-        # 使用当前节点的影响力和权重计算下游节点的影响力增量
-        influences[downstreamNode] <- influences[downstreamNode] + influences[node] * (upstreamInfluenceWeight ^ currentLevel)
-      }
-    }
-  }
-  
-  return(influences)
-}
+traceback_matrix <- get_traceback(connectivity = 4, OCNwe = OCNwe)
+steps_matrix <- calculate_steps_to_downstream(traceback_matrix, OCNwe)
+influence_results <- calculateInfluenceDynamically(upstreamInfluenceWeight=0.5, OCNwe,traceback_matrix, steps_matrix)
 
-influence_results <- calculateInfluenceDynamically(connectivity=10, upstreamInfluenceWeight=1, OCNwe)
+influence_results <- calculateInfluenceDynamically(connectivity=100, upstreamInfluenceWeight=0.5, OCNwe)
 normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
-
-hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
-hist(normalized_influences, main="Distribution of Normalized Influence Weights", xlab="Normalized Influence Weight", breaks=20)
-#这是河流影响权重，可以与density pop结合起来，更大的influence weight有更多的pop
-
-# Assuming draw_thematic_OCN can be adapted or is suitable for this purpose
-draw_thematic_OCN(normalized_influences, OCNwe, colLevels = c(0.4, max(normalized_influences), 100),
-                  drawNodes = FALSE)  # Ensure drawNodes is set appropriately
-title("Node Normalized Weights Representation")
 ```
 
 ```{r}
@@ -303,8 +286,8 @@ library(plotly)
 results_df <- data.frame(Influence = numeric(), Connectivity = factor())
 
 # 遍历connectivity值从1到10
-for (conn in 1:10) {
-  influence_results <- calculateInfluenceDynamically(connectivity=conn, upstreamInfluenceWeight=0.5, OCNwe)
+for (conn in seq(1,20,6)) {
+  influence_results <- calculateInfluenceDynamically(connectivity=conn, upstreamInfluenceWeight=0.7, OCNwe)
   normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
   
   # 将当前connectivity下的影响力结果添加到数据框
@@ -326,4 +309,26 @@ plotly_plot <- ggplotly(gg_plot)
 # 显示交互式图表
 plotly_plot
 ```
+
+
+#simulated pop from the weighted river
+```{r}
+
+# 根据密度函数抽样，得到预期的种群总数
+sampled_trout_populations <- sample_from_density(density_data, n = length(OCNwe$RN$A))
+# 求得所有抽样值的总和，表示整个河流系统的预期鱼类种群总数量
+total_fish_population <- sum(sampled_trout_populations*OCNwe$RN$leng/1000) 
+
+# 归一化影响力，确保所有节点的影响力加起来为1
+normalized_influences <- influence_results  / sum(influence_results )
+
+# 根据归一化的影响力来分配鱼类种群到每个节点
+allocated_fish_populations <- total_fish_population * normalized_influences
+
+# 打印出来或进行后续分析
+weighted_pop0<-allocated_fish_populations*OCNwe$RN$leng/1000
+
+
+```
+
 
