@@ -1,0 +1,212 @@
+---
+title: "water_level_prediction"
+author: "Yifan Wang"
+date: "2024-04-05"
+output: html_document
+---
+
+
+
+
+```{r }
+## readr imports data
+library(readr)
+library(tidyr)
+## tibbles are advanced fancy dataframes
+library(tibble)
+## dplyr for data handling and piping functions
+library(dplyr)
+## ggplot for plots
+library(ggplot2)
+## stringr to read and manipulate strings
+library(stringr)
+## here is a function to ensure file paths are correct
+library(here)
+## units and ggforce facilitate attaching units to data
+library(units)
+library(ggforce)
+## hrbrtheme is optional, I use it to pretty my plots
+library(hrbrthemes)
+## patchwork and cowplot support arranging multiple ggplots into one plot
+library(patchwork)
+library(cowplot)
+## lubridate provides functions for handling time and date
+library(lubridate)
+## purrr lets us use map_ functions as an alternative to loops
+library(purrr)
+## hydroGOF provide goodness of fit metrics (NSE, RMSE, etc.)
+library(hydroGOF)
+## tsibble and imputeTS will allow some simple time series interpolation
+library(tsibble)
+library(imputeTS)
+## gt
+library(gtsummary)
+## nls.multstart fits non-linear least squares using the Levenberg-Marquardt algorithm with multiple starting values.
+library(nls.multstart)
+##
+library(mgcv)
+library(knitr)
+library(gridExtra)
+```
+
+```{r}
+
+Sys.setlocale("LC_TIME", "C")
+# 设置科学记数法的惩罚值，使R偏好于显示完整数字而非科学记数法
+options(scipen = 999)
+
+# 设置打印数字时的最大有效数字位数
+options(digits = 7)
+## set some options
+update_geom_font_defaults(font_rc)
+units_options(parse = FALSE)
+
+
+## some custom functions
+theme_ms <- function(...) {
+  theme_ipsum_rc(plot_margin = margin(10,10,10,10),
+                 axis_title_just = "c") +
+    theme(legend.position = "bottom",
+          panel.background = element_rect(fill = "white", 
+                                          colour = NA), 
+          panel.border = element_rect(fill = NA, 
+                                      colour = "grey20"),
+          ...)
+}
+
+exponent <- function(x, pow) {
+  (abs(x)^pow)*sign(x)
+}
+```
+
+```{r}
+
+# 读取CSV文件，从第三行开始，并指定列名
+site_8516_discharge <- read.csv("D:/Dissertation/flood prediction/NZ_WATERLEVEL_DISCHARGE/DataSetExport-River Discharge.Continuous@8516-Maximum-Acre-ft hr-20240405231313.csv"
+                 , skip = 2, header = FALSE,
+                 col.names = c("start_time","end_time","discharge"))
+head(site_8516_discharge)
+
+site_8516_waterlevel<-read.csv("D:/Dissertation/flood prediction/NZ_WATERLEVEL_DISCHARGE/DataSetExport-River Water Level.Continuous@8516-Maximum-ft-20240405231236.csv"
+                 , skip = 2, header = FALSE,
+                 col.names = c("start_time","end_time","water_level"))
+head(site_8516_waterlevel)
+
+## 创建tibble
+site_8516<- tibble()
+
+site_8516_discharge <- site_8516_discharge %>%
+  mutate(start_time = as.POSIXct(start_time, tz = "Pacific/Auckland", format = "%Y-%m-%d %H:%M:%S"),
+         end_time = as.POSIXct(end_time, tz = "Pacific/Auckland", format = "%Y-%m-%d %H:%M:%S"))
+
+site_8516_waterlevel <- site_8516_waterlevel %>%
+  mutate(start_time = as.POSIXct(start_time, tz = "Pacific/Auckland", format = "%Y-%m-%d %H:%M:%S"),
+         end_time = as.POSIXct(end_time, tz = "Pacific/Auckland", format = "%Y-%m-%d %H:%M:%S"))
+
+# 使用 inner_join 来合并两个数据集，基于 start_time 和 end_time
+site_8516 <- inner_join(site_8516_discharge, site_8516_waterlevel, by = c("start_time", "end_time"))
+
+## 设定单位
+units(site_8516$water_level) <- as_units("ft")
+units(site_8516$discharge) <- as_units("ft^3/s")
+
+# 创建discharge图表
+p1 <- ggplot(site_8516, aes(x = start_time, y = discharge)) +
+  geom_point(alpha = 0.5) +
+  labs(x = "Date", y = "Discharge (ft^3/s)") +
+  theme_minimal()
+
+# 创建water_level图表
+p2 <- ggplot(site_8516, aes(x = start_time, y = water_level)) +
+  geom_point(alpha = 0.5) +
+  labs(x = "Date", y = "Water Level (ft)") +
+  theme_minimal()
+
+# 使用grid.arrange并列放置两个图表
+grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r}
+site_8516_processed <- site_8516 %>%
+  mutate(Date_time = start_time,
+         time_lag = start_time,
+         time_end = end_time,
+         start_time = as.POSIXct(start_time),
+         end_time = as.POSIXct(end_time),
+         diff_time = as.numeric(difftime(time_end, time_lag, units = "hours")),
+         Flow = discharge,
+         Depth = water_level) %>%
+  mutate(diff_depth = c(NA, diff(Depth))) %>% # 计算深度差，为首行添加NA
+  mutate(J = diff_depth / diff_time) %>% # 计算J
+  select(-discharge, -water_level) %>% # 删除原始的discharge和water_level列
+  filter(row_number() != 1) %>% # 删除第一行，因为diff_depth和J的计算需要前一行的数据
+  select(Date_time, time_lag, time_end, diff_time, Flow, Depth, diff_depth, J) %>%
+  filter(!is.na(diff_depth), !is.na(J)) # 去掉包含NA的行
+ 
+
+# 显示处理后的数据框
+print(site_8516_processed)
+```
+```{r}
+jones_form <- formula(log(as.numeric(Flow)) ~ K*exponent(x = log(as.numeric(Depth)) - a, pow = n) * exponent(x = (1 + x * J), pow = (1/2)))
+
+## some starting paremeters. nls_multstart will use multiple
+## starting parameters and model selection to find 
+## global minimum
+start_lower <- list(K = 0, a = 0, n = 0, x = -5000)
+start_upper <- list(K = 100, a = 1000, n = 50, x = 5000)
+## fit nls
+rc_site_8516 <- nls_multstart(jones_form,
+                                  data = site_8516_processed,
+                                  iter = 1000,
+                                  start_lower = start_lower,
+                                  start_upper = start_upper,
+                                  convergence_count = FALSE,
+                                  supp_errors = "Y")
+
+
+site_8516_processed %>%
+  filter(!is.na(J)) %>%
+  mutate(predicted = exp(predict(rc_site_8516, .))) -> site_8516_processed
+
+site_8516_result <- tibble(Site = c("8516"),
+                           Period = c("2024-03-06 : 2020-04-06"),
+                           K = c(coefficients(rc_site_8516)[["K"]]),
+                           a = c(coefficients(rc_site_8516)[["a"]]),
+                           n = c(coefficients(rc_site_8516)[["n"]]),
+                           x = c(coefficients(rc_site_8516)[["x"]]))
+
+site_8516_result %>%
+  mutate(NSE = 
+  hydroGOF::NSE(site_8516_processed$predicted, as.numeric(site_8516_processed$Flow)),
+  nRMSE = hydroGOF::nrmse(site_8516_processed$predicted, as.numeric(site_8516_processed$Flow), norm = "maxmin")
+)-> site_8516_result
+kable(site_8516_result, 
+      caption = "Rating curve parameter estimates and goodness-of-fit metrics for station 8516.") 
+```
+```{r}
+## plot rating curve results
+
+p1 <- ggplot(site_8516_processed) +
+  geom_point(aes(as.numeric(predicted), as.numeric(Flow), color = "Rating curve prediction against measured flow"), alpha = 0.25) +
+  geom_abline(aes(slope = 1, intercept = 0, linetype = "1:1 line")) +
+  scale_x_continuous(name = "Rating curve flow estimate [cfs]", trans = "log10") +
+  scale_y_continuous(name = "Measured flow [cfs]", trans = "log10") +
+  theme_ms() + labs(subtitle = "2024-03-06 through 2024-04-06") +
+  theme(legend.title = element_blank(),
+        plot.subtitle = element_text(size = 8))
+
+p2 <- ggplot(site_8516_processed) +
+  geom_point(aes(as.numeric(Flow), Depth, color = "Measured")) +
+  geom_path(aes(as.numeric(Flow), Depth, color = "Measured", linetype = "Measured"),
+            alpha = 0.5) +
+  geom_point(aes(as.numeric(predicted), Depth, color = "Predicted")) +
+  geom_path(aes(as.numeric(predicted), Depth, color = "Predicted", linetype = "Predicted"),
+            alpha = 0.5) +
+  scale_color_discrete("") + scale_linetype_discrete("") +
+  scale_x_continuous("Flow [cfs]", trans = "log10") +
+  labs(subtitle = "2024-03-06 through 2024-04-06") + theme_ms() + 
+  theme(plot.subtitle = element_text(size = 8))
+(p1 + p2) 
+```
+
