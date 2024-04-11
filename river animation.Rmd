@@ -1,0 +1,188 @@
+---
+title: "river animation"
+author: "Yifan Wang"
+date: "2024-04-10"
+output: html_document
+---
+
+
+```{r}
+library(fields)
+draw_elev3Drgl_OCN_RN <- function(OCN,
+                               coarseGrain=c(1,1),
+                               chooseCM=FALSE,
+                               addColorbar=FALSE,
+                               drawRiver=FALSE,
+                               thrADraw=0.002*OCN$RN$nNodes*OCN$cellsize^2,
+                               riverColor="#00CCFF",
+                               min_lwd=1,
+                               max_lwd=8,
+                               ...){
+  #aspect=c(1,1,0.1),
+  #ColPalette=terrain.colors(1000,alpha=1),
+  
+  
+  # give default values to unspecified arguments
+  args.def <- list(aspect=c(OCN$dimX/sqrt(OCN$dimX*OCN$dimY),OCN$dimY/sqrt(OCN$dimX*OCN$dimY),0.1),axes=FALSE,xlab="",ylab="",zlab="")
+  inargs <- list(...)
+  args.def[names(inargs)] <- inargs
+  
+  if (!("Z" %in% names(OCN$RN))){
+    stop('Missing fields in OCN. You should run landscape_OCN prior to draw_elev3D_OCN.')
+  }
+  
+  if (!(chooseCM %in% 1:length(OCN$CM$A)) && !is.logical(chooseCM)) {
+    stop('Invalid choice for chooseCM.')
+  }
+  
+  if ((OCN$dimX %% coarseGrain[1] != 0) || (OCN$dimY %% coarseGrain[2] != 0)){
+    stop('coarseGrain[1] must be divisor of dimX; coarseGrain[2] must be divisor of dimY')
+  }   
+  
+  if ( (!chooseCM || OCN$CM$A[chooseCM] == OCN$nNodes*OCN$cellsize^2) && OCN$RN$nNodes==OCN$dimX*OCN$dimY){ 
+    
+    if (is.null(OCN$xllcorner)){xllcorner <- min(OCN$RN$X)[1]} else {xllcorner <- OCN$xllcorner}
+    if (is.null(OCN$yllcorner)){yllcorner <- min(OCN$RN$Y)[1]} else {yllcorner <- OCN$yllcorner}
+    
+    if (OCN$RN$nNodes < OCN$dimX*OCN$dimY){
+      if (isTRUE(OCN$typeInitialState=="custom")){
+        Zmat <- matrix(NaN,OCN$dimY,OCN$dimX)
+        Zmat[OCN$RN$toFD] <- OCN$RN$Z
+        Zmat <- Zmat[seq(OCN$dimY,1,-1), ]
+      } else { # real river
+        Zmat <- matrix(NaN,OCN$dimX,OCN$dimY)
+        Zmat[OCN$RN$toFD] <- OCN$RN$Z
+        Zmat <- Zmat[,seq(OCN$dimY,1,-1)]
+        Zmat <- t(Zmat)
+      }
+    } else {Zmat <- matrix(data=OCN$RN$Z,nrow=OCN$dimY,ncol=OCN$dimX)}
+    
+    Xvec <- seq(xllcorner,xllcorner+(OCN$dimX-1)*OCN$cellsize,OCN$cellsize)
+    Yvec <- seq(yllcorner,yllcorner+(OCN$dimY-1)*OCN$cellsize,OCN$cellsize)
+    
+    Z_cg <- matrix(data=0,nrow=OCN$dimY/coarseGrain[2],ncol=OCN$dimX/coarseGrain[1])
+    X_cg <- rep(0,OCN$dimX/coarseGrain[1])
+    Y_cg <- rep(0,OCN$dimY/coarseGrain[2])
+    
+    for (i in 1:(OCN$dimX/coarseGrain[1])){
+      subX <- ((i-1)*coarseGrain[1]+1):(i*coarseGrain[1])
+      X_cg[i] <- mean(Xvec[subX])
+      for (j in 1:(OCN$dimY/coarseGrain[2])){
+        subY <- ((j-1)*coarseGrain[2]+1):(j*coarseGrain[2])
+        Z_cg[j,i] <- mean(Zmat[subY,subX],na.rm=T)
+        Y_cg[j] <- mean(Yvec[subY])
+      }
+    }
+    
+    par3d(windowRect = c(0, 30, 1000, 1000))
+    Zmat <- Zmat + 0.005*mean(Zmat,na.rm=T)
+    zlim <- range(Zmat, na.rm=T)
+    
+    zlim[1] <- floor(zlim[1]- 0.005*mean(Zmat,na.rm=T)); zlim[2] <- ceiling(zlim[2]) 
+    zlen <- zlim[2] - zlim[1] + 1
+    colorlut <- terrain.colors(zlen) # height color lookup table
+    col <- colorlut[ t(Z_cg) - zlim[1] + 1 ] # assign colors to heights for each point
+    
+    offset <- 0.1*(zlim[2]-zlim[1])
+    # draw river
+    if (drawRiver==TRUE){
+      AvailableNodes <- setdiff(1:OCN$RN$nNodes,OCN$RN$outlet)
+      for (i in AvailableNodes){
+        if (OCN$RN$A[i]>=thrADraw & 
+            abs(OCN$RN$X[i]-OCN$RN$X[OCN$RN$downNode[i]]) <= 1.001*OCN$cellsize & 
+            abs(OCN$RN$Y[i]-OCN$RN$Y[OCN$RN$downNode[i]]) <= 1.001*OCN$cellsize) {
+          lines3d(c(OCN$RN$X[i],OCN$RN$X[OCN$RN$downNode[i]]),c(OCN$RN$Y[i],OCN$RN$Y[OCN$RN$downNode[i]]),
+                  offset + c(OCN$RN$Z[i],OCN$RN$Z[OCN$RN$downNode[i]]),
+                  lwd=min_lwd+(max_lwd-min_lwd)*(OCN$RN$A[i]/(OCN$RN$nNodes*OCN$cellsize^2))^0.5,col=riverColor)}
+      }
+    }
+    # add colorbar
+    if (addColorbar==TRUE){  
+      bgplot3d(suppressWarnings(imagePlot(legend.only=TRUE, zlim=zlim,col=colorlut,legend.lab = "latitude")))
+    }
+    
+  } else {
+    
+    if (is.logical(chooseCM)){
+      chooseCM <- which(OCN$CM$A==max(OCN$CM$A))
+    }
+    
+    if (OCN$periodicBoundaries==FALSE){
+      mask <- which(OCN$RN$toCM!=chooseCM)
+      
+      if (is.null(OCN$xllcorner)){xllcorner <- min(OCN$RN$X)[1]} else {xllcorner <- OCN$xllcorner}
+      if (is.null(OCN$yllcorner)){yllcorner <- min(OCN$RN$Y)[1]} else {yllcorner <- OCN$yllcorner}
+      
+      if (OCN$RN$nNodes < OCN$dimX*OCN$dimY){
+        if (isTRUE(OCN$typeInitialState=="custom")){
+          Zmat <- matrix(NaN,OCN$dimY,OCN$dimX)
+          Zmat[OCN$FD$toDEM] <- OCN$FD$Z
+          Zmat <- Zmat[seq(OCN$dimY,1,-1), ]
+        } else { # real river
+          Zmat <- matrix(NaN,OCN$dimX,OCN$dimY)
+          Zmat[OCN$FD$toDEM] <- OCN$FD$Z
+          Zmat <- Zmat[,seq(OCN$dimY,1,-1)]
+          Zmat <- t(Zmat)
+        }
+      } else {Zmat <- matrix(data=OCN$RN$Z,nrow=OCN$dimY,ncol=OCN$dimX)}
+      Xvec <- seq(xllcorner,xllcorner+(OCN$dimX-1)*OCN$cellsize,OCN$cellsize)
+      Yvec <- seq(yllcorner,yllcorner+(OCN$dimY-1)*OCN$cellsize,OCN$cellsize)
+      Zmat2 <- Zmat
+      Zmat2[mask] <- NaN
+      par3d(windowRect = c(0, 30, 1000, 1000))
+      zlim <- range(Zmat,na.rm = T)
+      zlim[1] <- floor(zlim[1]); zlim[2] <- ceiling(zlim[2]) 
+      zlen <- zlim[2] - zlim[1] + 1
+      colorlut <- terrain.colors(zlen) # height color lookup table
+      col <- colorlut[ t(Zmat) - zlim[1] + 1 ] # assign colors to heights for each point
+      persp3d(Xvec,Yvec,t(Zmat2), color = col, zlim=zlim,axes=FALSE,xlab="",ylab="",zlab="",aspect=c(1,1,0.1)) #
+      if (addColorbar==TRUE){  
+        bgplot3d(suppressWarnings(imagePlot(legend.only=TRUE, zlim=zlim,col=colorlut,legend.lab = "latitude",smallplot = c(0.94, 0.99, 0.1, 0.9))))
+      }
+      color_func <- colorRampPalette(c("blue", "red"))
+      # 计算需要的颜色数量
+      num_colors <- length(unique(normalized_influences))
+      # 创建足够数量的颜色
+      colors <- color_func(num_colors)
+      # 获取影响值的唯一值并排序
+      unique_influences <- sort(unique(normalized_influences))
+      # 为每个影响值分配颜色索引
+      influence_color_index <- match(normalized_influences, unique_influences)
+      # 选择颜色
+      selected_colors <- colors[influence_color_index]
+      
+      if (addColorbar == TRUE) {
+    # 使用 bgplot3d 和 imagePlot 来添加图例，调整 smallplot 参数来放置图例在最左边
+    bgplot3d({
+      suppressWarnings(
+        imagePlot(legend.only = TRUE, zlim = (range(unique_influences)), col = colors, 
+                  legend.lab = "Influence Value",smallplot = c(0.05, 0.1, 0.1, 0.9))
+      )
+    })
+}
+      
+      if (drawRiver == TRUE) {
+    offset <- 0.1 * (zlim[2] - zlim[1])
+    AvailableNodes <- setdiff(1:OCN$RN$nNodes, OCN$RN$outlet)
+    for (i in AvailableNodes) {
+        if (OCN$RN$A[i] >= thrADraw & 
+            abs(OCN$RN$X[i] - OCN$RN$X[OCN$RN$downNode[i]]) <= 1.001 * OCN$cellsize & 
+            abs(OCN$RN$Y[i] - OCN$RN$Y[OCN$RN$downNode[i]]) <= 1.001 * OCN$cellsize) {
+            # 获取这条河流线段的颜色
+            line_color <- selected_colors[i]
+            lines3d(c(OCN$RN$X[i], OCN$RN$X[OCN$RN$downNode[i]]),
+                    c(OCN$RN$Y[i], OCN$RN$Y[OCN$RN$downNode[i]]),
+                    offset + c(OCN$RN$Z[i], OCN$RN$Z[OCN$RN$downNode[i]]),
+                    col = line_color, lwd=0.5+7*(OCN$RN$A[i]/(OCN$RN$nNodes*OCN$cellsize^2))^0.5) # 使用计算出的颜色和自定义的线宽
+        }
+    }
+}
+    } 
+  }
+}
+```
+
+```{r}
+draw_elev3Drgl_OCN_RN(OCNwe,drawRiver = TRUE,addColorbar = TRUE)
+```
+
