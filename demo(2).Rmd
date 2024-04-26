@@ -1,0 +1,448 @@
+---
+title: "Demo"
+author: "Yifan Wang"
+date: "2024-04-18"
+output: html_document
+---
+
+```{r }
+library(sf)
+library(dplyr)
+library(mapview)
+library(riverdist)
+library(webshot)
+library(OCNet)
+library(rivnet)
+library(stringr)
+library(RColorBrewer)
+library(leaflet)
+library(plotly)
+library(shiny)
+
+
+
+
+
+shapefilePath <- "D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp"
+
+riverLines <- st_read(shapefilePath)
+
+
+```
+
+#查询特定ID的连接网络
+
+```{r}
+#ID=263375
+ID=98018
+findConnected <- function(targetID, riverLines, visited = numeric()) {
+  # 初始化一个队列，存放当前层级待访问的节点
+  queue <- c(targetID)
+  while (length(queue) > 0) {
+    # 取出队列的第一个元素
+    currentID <- queue[1]
+    queue <- queue[-1]
+    # 检查是否遇到结束标志
+    if(currentID == -1) {
+      next # 跳过当前迭代
+    }
+    # 将当前节点添加到已访问列表
+    if (!currentID %in% visited) {
+      visited <- c(visited, currentID)
+      # 找到所有下游节点，即当前节点作为NextDownID的节点
+      downstreamIDs <- riverLines$HydroID[riverLines$NextDownID == currentID]
+      
+      # 找到所有上游节点，即当前节点的HydroID在其他节点的NextDownID中的节点
+      upstreamIDs <- riverLines$NextDownID[riverLines$HydroID == currentID]
+      
+      # 将未访问的下游和上游节点添加到队列中
+      for (id in c(downstreamIDs, upstreamIDs)) {
+        if (!id %in% visited ) { # 确保不将结束标志或已访问的节点添加到队列
+          queue <- c(queue, id)
+        }
+      }
+    }
+  }
+  
+  # 移除列表中的-1，如果存在
+  visited <- visited[visited != -1]
+  
+  return(visited)
+}
+
+# 使用定义的函数，从HydroID=98753开始找到所有相连的河流段
+connected_hydroIDs <- findConnected(ID, riverLines)
+
+# 输出找到的HydroID数量
+cat("Found connected HydroIDs count:", length(connected_hydroIDs), "\n")
+
+
+```
+
+# PLOT1
+```{r}
+
+# 读取整个Shapefile
+river_quality<-st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
+
+
+# 选择特定的字段  /Ammoniacal nitrogen /Ammoniacal nitrogen (adjusted) /Nitrate-nitrite nitrogen    /Total nitrogen 
+riverLines_water_quality <- river_quality%>%
+  select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(mesrmnt == "95th",strm_rd>=4)%>%
+  rename(nzsegment = nzsgmnt)
+
+
+connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+rivers_sf <- st_as_sf(connected_river_segments, coords = c("lon", "lat"), crs = 4326)
+set.seed(123) # 为了可重复性
+# 将sf对象转换为WGS84坐标系统 (EPSG:4326)
+riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs =st_crs(rivers_sf ))
+
+
+rivers_sf=rivers_sf%>%st_join(riverLines_water_quality_wgs84,by="nzsegment")
+
+
+# Define the bounding box area if necessary or use the extent of your river data
+bbox <- st_bbox(rivers_sf)
+
+# Create hexagonal grid
+hex_grid <- st_make_grid(rivers_sf, cellsize = 1800, square = FALSE, what = "polygons")
+# 创建一个空间六边形数据框
+hex_sf <- st_sf(geometry = hex_grid)
+
+# 聚合河流数据到六边形网格
+hex_rivers <- st_join(hex_sf, rivers_sf, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarize(Value = mean(value, na.rm = TRUE), .groups = 'drop')
+
+# 计算每个六边形的中心点坐标
+hex_centers <- st_centroid(hex_rivers)
+
+print(head(hex_rivers))
+hex_rivers <- st_transform(hex_rivers, crs = 4326)
+hex_centers <- st_centroid(hex_rivers)
+hex_rivers$lon <- st_coordinates(hex_centers)[,1]
+hex_rivers$lat <- st_coordinates(hex_centers)[,2]
+
+print(head(hex_rivers))
+# 创建地图对象，使用 OpenStreetMap 或其他底图
+map <- leaflet() %>%
+  addProviderTiles(providers$Esri.WorldImagery)  # 这里使用了 Esri 的世界影像图作为底图，提供了真实地貌的视觉效果
+
+# 添加六边形网格
+map <- map %>% addPolygons(
+  data = hex_rivers,
+  fillColor = ~colorNumeric(palette = "viridis", domain = hex_rivers$Value)(Value),
+  weight = 1,
+  color = "white",
+  fillOpacity = 0.7,
+  popup = ~paste("Average Value: ", round(Value, 2))  # 点击多边形时显示的弹出信息
+)
+
+# 显示地图
+map
+```
+
+#源头节点函数
+```{r}
+get_source_node_REC <- function(final_river_segments) {
+    # 找到所有被其他节点指向的节点（即有上游的节点）
+    downstream_nodes <- unique(na.omit(final_river_segments$NextDownID[final_river_segments$NextDownID != -1]))
+    
+    # 找到所有节点
+    all_nodes <- unique(final_river_segments$HydroID)
+    
+    # 找出没有上游的节点（源头节点）
+    source_nodes <- setdiff(all_nodes, downstream_nodes)
+    
+    return(source_nodes)
+}
+```
+
+
+
+
+
+#strahler_classification
+
+```{r}
+strahler_classification <- function(final_river_segments) {
+  # 找到所有源头节点
+  source_nodes <- get_source_node_REC(final_river_segments)
+  # 初始化等级为 1 的节点
+  final_river_segments$Strahler[final_river_segments$HydroID %in% source_nodes] <- 1
+  # 初始化队列，用于存储待处理的节点
+  queue <- source_nodes
+  # 开始迭代处理节点
+  while (length(queue) > 0) {
+    # 从队列中取出一个节点
+    node <- queue[1]
+    queue <- queue[-1]
+    # 获取当前节点的下游节点
+    downstream_nodes <- final_river_segments$NextDownID[final_river_segments$HydroID == node]
+    # 检查当前节点是否有下游节点
+    if (length(downstream_nodes) == 0 || is.na(downstream_nodes)) {
+      next  # 跳过当前节点没有下游节点的情况
+    }
+    # 如果当前节点有下游节点
+    if (!is.na(downstream_nodes)) {
+      # 计算下游节点的入度
+      downstream_count <- sum(final_river_segments$NextDownID == downstream_nodes)
+      # 如果下游节点的入度为1
+      if (downstream_count == 1) {
+        # 获取上游节点的等级
+        upstream_node_rank <- final_river_segments$Strahler[final_river_segments$NextDownID == downstream_nodes]
+        # 将下游节点的等级设置为上游节点的等级
+        final_river_segments$Strahler[final_river_segments$HydroID == downstream_nodes] <- upstream_node_rank
+        
+        # 将下游节点加入队列，继续迭代处理
+        queue <- c(queue, downstream_nodes)
+      } else if (downstream_count > 1) {
+        # 获取上游节点的等级
+        upstream_node_ranks <- final_river_segments$Strahler[final_river_segments$NextDownID == downstream_nodes]
+        
+        # 如果上游节点等级不为空
+        if (length(unique(upstream_node_ranks)) == 1) {
+          # 如果上游节点等级全部相同，则将当前节点的等级设置为上游节点的等级加 1
+          final_river_segments$Strahler[final_river_segments$HydroID == downstream_nodes] <- unique(upstream_node_ranks) + 1
+          
+          # 将下游节点加入队列，继续迭代处理
+          queue <- c(queue, downstream_nodes)
+        } else {
+          # 如果上游节点等级不同，则继承最大的等级
+          max_upstream_rank <- max(upstream_node_ranks, na.rm = TRUE)
+          final_river_segments$Strahler[final_river_segments$HydroID == downstream_nodes] <- max_upstream_rank
+          
+          # 将下游节点加入队列，继续迭代处理
+          queue <- c(queue, downstream_nodes)
+        }
+      }
+    }
+  }
+  
+  return(final_river_segments)
+}
+generate_strahler_map <- function(connected_river_segments){
+strahler_output<- strahler_classification(connected_river_segments)
+# 将河流数据转换为 EPSG:4326 坐标系统
+strahler_output <- st_transform(strahler_output, crs = 4326)
+
+# 计算每个线段的中点并创建新的 sf 对象
+centroids <- st_centroid(strahler_output)
+centroids_df <- data.frame(
+  Strahler = strahler_output$Strahler,
+  geometry = centroids$geometry
+) %>%
+  st_as_sf(crs = st_crs(strahler_output))
+
+# 获取 Strahler 等级的数量
+strahler_levels <- unique(centroids_df$Strahler)
+num_levels <- length(strahler_levels)
+
+# 动态选择颜色调色板
+palette_name <- if (num_levels <= 3) {
+  "Set1"
+} else if (num_levels <= 8) {
+  "Dark2"
+} else {
+  "Spectral"
+}
+
+# 创建颜色映射函数
+colors <- colorNumeric(brewer.pal(min(11, num_levels), palette_name), domain = strahler_output$Strahler)
+
+# 使用 leaflet 创建地图
+map <- leaflet(strahler_output) %>%
+  addTiles() %>%
+  addPolylines(color = ~colors(Strahler), weight = 2, opacity = 0.7) %>%
+  addCircleMarkers(
+    data = centroids_df,
+    ~st_coordinates(geometry)[,1],
+    ~st_coordinates(geometry)[,2],
+    radius = 1,
+    label = ~as.character(Strahler),
+    labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE)
+  ) %>%
+  addLegend("bottomright", pal = colors, values = ~Strahler,
+            title = "Strahler Number",
+            labFormat = labelFormat(),
+            opacity = 0.7)
+
+# 显示地图
+return(map)
+}
+
+```
+#Shreve
+```{r}
+shreve_classification <- function(final_river_segments) {
+  # 找到所有源头节点
+  source_nodes <- get_source_node_REC(final_river_segments)
+  
+  # 初始化等级为 1 的节点
+  final_river_segments$Shreve[final_river_segments$HydroID %in% source_nodes] <- 1
+  
+  # 初始化队列，用于存储待处理的节点
+  queue <- source_nodes
+  
+  # 开始迭代处理节点
+  while (length(queue) > 0) {
+    # 从队列中取出一个节点
+    node <- queue[1]
+    queue <- queue[-1]
+    
+    # 获取当前节点的下游节点
+    downstream_node <- final_river_segments$NextDownID[final_river_segments$HydroID == node]
+    # 检查当前节点是否有下游节点
+    if (length(downstream_node) == 0 || is.na(downstream_node)) {
+      next  # 跳过当前节点没有下游节点的情况
+    }
+    # 如果当前节点有下游节点
+    if (!is.na(downstream_node)) {
+      # 获取下游节点的上游节点等级
+      upstream_node_ranks <- final_river_segments$Shreve[final_river_segments$NextDownID == downstream_node]
+      
+      # 如果上游节点等级不为空
+      if (length(upstream_node_ranks) > 0) {
+        # 计算当前节点的等级（相加上游节点的等级）
+        current_node_rank <- sum(upstream_node_ranks, na.rm = TRUE)
+        
+        # 更新下游节点的等级
+        final_river_segments$Shreve[final_river_segments$HydroID == downstream_node] <- current_node_rank
+        # 将下游节点加入队列，继续迭代处理
+        queue <- c(queue, downstream_node)
+      }
+    }
+  }
+  
+  return(final_river_segments)
+}
+
+generate_shreve_map<-function(connected_river_segments){
+shreve_output<- shreve_classification(connected_river_segments)
+max(shreve_output$Shreve)
+# 确保数据是 sf 对象，如果不是则转换
+if (!inherits(shreve_output, "sf")) {
+  shreve_output <- st_as_sf(shreve_output, coords = c("longitude", "latitude"), crs = 4326)
+} else {
+  # 转换坐标系统到 EPSG:4326，如果数据不在这个坐标系统中
+  shreve_output <- st_transform(shreve_output, crs = 4326)
+}
+# 计算每个线段的中点
+shreve_output_centroids <- st_centroid(shreve_output)
+
+# 使用 leaflet 创建地图
+map <- leaflet() %>%
+  addTiles() %>%
+  addPolylines(data = shreve_output, color = "#444444", weight = 1) %>%
+  addCircleMarkers(data = shreve_output_centroids, 
+                   lng = ~st_coordinates(geometry)[,1], 
+                   lat = ~st_coordinates(geometry)[,2], 
+                   radius = 1, 
+                   label = ~as.character(Shreve), 
+                   labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE))
+
+# 显示地图
+return(map)}
+
+
+```
+
+
+
+
+
+
+```{r}
+# 确保数据已加载
+if (!exists("riverLines") || !exists("river_quality")) {
+  riverLines <- st_read("D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp")
+  river_quality <- st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
+}
+
+ui <- fluidPage(
+  titlePanel("Dynamic Hexagonal Grids on Leaflet Map"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("gridsize", "Grid Cell Size:", min = 1000, max = 3000, value = 2000, step = 200),
+      selectInput("maptype", "Select Map Type:", 
+                  choices = c("OpenStreetMap" = "OpenStreetMap",
+                              "Esri World Imagery" = "Esri.WorldImagery",
+                              "CartoDB Positron" = "CartoDB.Positron")),
+      checkboxInput("showRivers", "Show River Lines", FALSE)  # 添加复选框让用户选择是否显示河流线条
+    ),
+    mainPanel(
+      leafletOutput("map")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  reactiveHexRivers <- reactive({
+    rivers_sf <- st_as_sf(connected_river_segments, coords = c("lon", "lat"), crs = 4326)
+    set.seed(123)  # 为了可重复性
+    riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs = st_crs(rivers_sf))
+    rivers_sf <- rivers_sf %>% st_join(riverLines_water_quality_wgs84, by = "nzsegment")
+
+    # 根据用户选择的网格大小创建网格
+    hex_grid <- st_make_grid(rivers_sf, cellsize = input$gridsize, square = FALSE, what = "polygons")
+    hex_sf <- st_sf(geometry = hex_grid)
+
+    # 聚合河流数据到六边形网格
+    hex_rivers <- st_join(hex_sf, rivers_sf, join = st_intersects) %>%
+      group_by(geometry) %>%
+      summarize(Value = mean(value, na.rm = TRUE), .groups = 'drop')%>%st_transform(hex_rivers, crs = 4326)
+    
+    rivers_sf<-st_transform(rivers_sf, crs = 4326)
+    # 返回多个变量
+    list(hex_rivers = hex_rivers, rivers_sf = rivers_sf[!is.na(rivers_sf$value), ])
+  })
+
+  output$map <- renderLeaflet({
+    map <- leaflet() %>%
+      addProviderTiles(providers[[input$maptype]]) %>%
+      addPolygons(
+        data = reactiveHexRivers()$hex_rivers,  # 获取 hex_rivers
+        fillColor = ~colorNumeric(palette = "viridis", domain = reactiveHexRivers()$hex_rivers$Value)(Value),
+        color = "white",
+        fillOpacity = 0.4,
+        popup = ~paste("Average Value: ", round(Value, 2))
+      )
+
+    # 根据用户选择添加或不添加河流线条
+    if (input$showRivers) {
+      map <- map %>% addPolylines(data = reactiveHexRivers()$rivers_sf, color = "blue", weight = 2, opacity = 0.5)
+    }
+
+    map  # 返回更新后的地图
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+
+
+
+
+
+
+# PLOT2
+
+```{r}
+
+
+rivers_sf1<-rivers_sf%>%filter(!is.na(value))
+coords <- st_coordinates(rivers_sf1)
+#Take the mean and plot it according to structure
+coords<-as.data.frame(coords)%>%group_by(L1)%>%summarise(X=mean(X),Y=mean(Y))%>%as.data.frame()
+
+plot_ly(data = rivers_sf1, x = ~coords[,2], y = ~coords[,3], type = 'scatter', mode = 'markers',
+  color = ~rivers_sf1$value, text = ~paste("Value:", rivers_sf1$value), 
+                         marker = list(symbol = 'triangle-up', size = 14),showlegend = F) %>%
+  layout(title = 'River Paths',
+         xaxis = list(title = 'Longitude'),
+         yaxis = list(title = 'Latitude'),legend=list(title = list(text = "")))%>%colorbar(title = "value")
+
+```
+
