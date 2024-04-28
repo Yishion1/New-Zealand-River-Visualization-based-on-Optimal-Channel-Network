@@ -51,3 +51,6 @@ to do 把权重与pop的density结合起来得到模拟的种群数量数据
 # 4.3
 OCN aggregate 的时候应该选择较小的值，就可以避免influences计算时间过长。完成weighted river的population 模拟。
 To do:写证明文档
+# 4.28
+完成shiny基础框架，
+to do分两种污染源展示河流图，可以在一开始处理数据时候就把数据分开成两份，最后删掉原始数据。在shiny里面提供用户选项。
