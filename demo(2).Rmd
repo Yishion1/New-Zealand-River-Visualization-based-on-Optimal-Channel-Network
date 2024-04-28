@@ -83,11 +83,11 @@ cat("Found connected HydroIDs count:", length(connected_hydroIDs), "\n")
 ```{r}
 
 # 读取整个Shapefile
-river_quality<-st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
+riverLines_water_quality<-st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
 
 
 # 选择特定的字段  /Ammoniacal nitrogen /Ammoniacal nitrogen (adjusted) /Nitrate-nitrite nitrogen    /Total nitrogen 
-riverLines_water_quality <- river_quality%>%
+riverLines_water_quality <- riverLines_water_quality%>%
   select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(mesrmnt == "95th",strm_rd>=4)%>%
   rename(nzsegment = nzsgmnt)
 
@@ -159,10 +159,6 @@ get_source_node_REC <- function(final_river_segments) {
 }
 ```
 
-
-
-
-
 #strahler_classification
 
 ```{r}
@@ -222,55 +218,58 @@ strahler_classification <- function(final_river_segments) {
   
   return(final_river_segments)
 }
-generate_strahler_map <- function(connected_river_segments){
-strahler_output<- strahler_classification(connected_river_segments)
-# 将河流数据转换为 EPSG:4326 坐标系统
-strahler_output <- st_transform(strahler_output, crs = 4326)
 
-# 计算每个线段的中点并创建新的 sf 对象
-centroids <- st_centroid(strahler_output)
-centroids_df <- data.frame(
-  Strahler = strahler_output$Strahler,
-  geometry = centroids$geometry
-) %>%
-  st_as_sf(crs = st_crs(strahler_output))
 
-# 获取 Strahler 等级的数量
-strahler_levels <- unique(centroids_df$Strahler)
-num_levels <- length(strahler_levels)
+generate_strahler_map <- function(connected_river_segments) {
+  strahler_output <- strahler_classification(connected_river_segments)
+  # 将河流数据转换为 EPSG:4326 坐标系统
+  strahler_output <- st_transform(strahler_output, crs = 4326)
 
-# 动态选择颜色调色板
-palette_name <- if (num_levels <= 3) {
-  "Set1"
-} else if (num_levels <= 8) {
-  "Dark2"
-} else {
-  "Spectral"
-}
-
-# 创建颜色映射函数
-colors <- colorNumeric(brewer.pal(min(11, num_levels), palette_name), domain = strahler_output$Strahler)
-
-# 使用 leaflet 创建地图
-map <- leaflet(strahler_output) %>%
-  addTiles() %>%
-  addPolylines(color = ~colors(Strahler), weight = 2, opacity = 0.7) %>%
-  addCircleMarkers(
-    data = centroids_df,
-    ~st_coordinates(geometry)[,1],
-    ~st_coordinates(geometry)[,2],
-    radius = 1,
-    label = ~as.character(Strahler),
-    labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE)
+  # 计算每个线段的中点并创建新的 sf 对象
+  centroids <- st_centroid(strahler_output)
+  centroids_df <- data.frame(
+    Strahler = strahler_output$Strahler,
+    geometry = centroids$geometry
   ) %>%
-  addLegend("bottomright", pal = colors, values = ~Strahler,
-            title = "Strahler Number",
-            labFormat = labelFormat(),
-            opacity = 0.7)
+    st_as_sf(crs = st_crs(strahler_output))
 
-# 显示地图
-return(map)
+  # 获取 Strahler 等级的唯一整数值
+  strahler_levels <- sort(unique(round(centroids_df$Strahler)))
+  num_levels <- length(strahler_levels)
+
+  # 动态选择颜色调色板
+  palette_name <- if (num_levels <= 3) {
+    "Set1"
+  } else if (num_levels <= 8) {
+    "Dark2"
+  } else {
+    "Spectral"
+  }
+
+  # 创建颜色映射函数，使用 colorFactor 为离散值分配颜色
+  colors <- colorFactor(palette = brewer.pal(min(11, num_levels), palette_name), domain = strahler_levels, na.color = "transparent")
+
+  # 使用 leaflet 创建地图
+  map <- leaflet(strahler_output) %>%
+    addTiles() %>%
+    addPolylines(color = ~colors(Strahler), weight = 2, opacity = 0.7) %>%
+    addCircleMarkers(
+      data = centroids_df,
+      ~st_coordinates(geometry)[,1],
+      ~st_coordinates(geometry)[,2],
+      radius = 1,
+      label = ~as.character(Strahler),
+      labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE)
+    ) %>%
+    addLegend("bottomright", pal = colors, values = strahler_levels,  # 使用整数值
+              title = "Strahler Number",
+              labFormat = labelFormat(),
+              opacity = 0.7)
+
+  # 显示地图
+  return(map)
 }
+generate_strahler_map(connected_river_segments)
 
 ```
 #Shreve
@@ -318,33 +317,53 @@ shreve_classification <- function(final_river_segments) {
   return(final_river_segments)
 }
 
-generate_shreve_map<-function(connected_river_segments){
-shreve_output<- shreve_classification(connected_river_segments)
-max(shreve_output$Shreve)
-# 确保数据是 sf 对象，如果不是则转换
-if (!inherits(shreve_output, "sf")) {
-  shreve_output <- st_as_sf(shreve_output, coords = c("longitude", "latitude"), crs = 4326)
-} else {
-  # 转换坐标系统到 EPSG:4326，如果数据不在这个坐标系统中
+generate_shreve_map <- function(connected_river_segments) {
+  shreve_output <- shreve_classification(connected_river_segments)
+  
+  # 转换坐标系统到 EPSG:4326
   shreve_output <- st_transform(shreve_output, crs = 4326)
+  
+  # 计算每个线段的中点
+  shreve_output_centroids <- st_centroid(shreve_output)
+  
+  # 获取 Shreve 等级的唯一整数值
+  shreve_levels <- sort(unique(shreve_output$Shreve))
+  
+  # 选择颜色调色板
+  palette_name <- if (length(shreve_levels) <= 3) {
+    "Set1"
+  } else if (length(shreve_levels) <= 8) {
+    "Dark2"
+  } else {
+    "Spectral"
+  }
+
+  # 创建颜色映射函数，为离散的 Shreve 分级分配颜色
+  colors <- colorFactor(palette = brewer.pal(min(11, length(shreve_levels)), palette_name), domain = shreve_levels)
+
+  # 使用 leaflet 创建地图
+  map <- leaflet(shreve_output) %>%
+    addTiles() %>%
+    addPolylines(color = ~colors(Shreve), weight = 2, opacity = 0.7) %>%
+    addCircleMarkers(
+      data = shreve_output_centroids, 
+      lng = ~st_coordinates(geometry)[,1], 
+      lat = ~st_coordinates(geometry)[,2], 
+      radius = 1, 
+      label = ~as.character(Shreve), 
+      labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE)
+    ) %>%
+    addLegend(
+      pal = colors, 
+      values = shreve_levels,  # 为图例使用 Shreve 等级
+      title = "Shreve Number",
+      opacity = 0.7,
+      position = "bottomright"
+    )
+
+  # 显示地图
+  return(map)
 }
-# 计算每个线段的中点
-shreve_output_centroids <- st_centroid(shreve_output)
-
-# 使用 leaflet 创建地图
-map <- leaflet() %>%
-  addTiles() %>%
-  addPolylines(data = shreve_output, color = "#444444", weight = 1) %>%
-  addCircleMarkers(data = shreve_output_centroids, 
-                   lng = ~st_coordinates(geometry)[,1], 
-                   lat = ~st_coordinates(geometry)[,2], 
-                   radius = 1, 
-                   label = ~as.character(Shreve), 
-                   labelOptions = labelOptions(noHide = TRUE, direction = 'auto', textOnly = TRUE))
-
-# 显示地图
-return(map)}
-
 
 ```
 
@@ -354,22 +373,47 @@ return(map)}
 
 
 ```{r}
+#ID=263375
+#ID=98018
+ID = 1
+connected_hydroIDs <- findConnected(ID, riverLines)
+connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+
+
 # 确保数据已加载
-if (!exists("riverLines") || !exists("river_quality")) {
+if (!exists("riverLines") || !exists("riverLines_water_quality")) {
   riverLines <- st_read("D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp")
-  river_quality <- st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
+  riverLines_water_quality <- st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
+  riverLines_water_quality <- riverLines_water_quality%>%
+  select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(measure == "Ammoniacal nitrogen (adjusted)")%>%
+  rename(nzsegment = nzsgmnt)
+# 将sf对象转换为WGS84坐标系统 (EPSG:4326)
+riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs =st_crs(rivers_sf ))
 }
 
+```
+
+
+
+```{r}
 ui <- fluidPage(
   titlePanel("Dynamic Hexagonal Grids on Leaflet Map"),
   sidebarLayout(
     sidebarPanel(
+      textInput("inputID", "Enter River ID:", value = "1"),
       sliderInput("gridsize", "Grid Cell Size:", min = 1000, max = 3000, value = 2000, step = 200),
       selectInput("maptype", "Select Map Type:", 
                   choices = c("OpenStreetMap" = "OpenStreetMap",
                               "Esri World Imagery" = "Esri.WorldImagery",
                               "CartoDB Positron" = "CartoDB.Positron")),
-      checkboxInput("showRivers", "Show River Lines", FALSE)  # 添加复选框让用户选择是否显示河流线条
+      checkboxInput("showRivers", "Show River Lines", FALSE),
+      checkboxInput("showStrahler", "Show Strahler River Classification", FALSE),
+      checkboxInput("showShreve","Show Shreve River Classification",FALSE),
+      actionButton("updateButton", "Update Map"),
+      tags$div(
+        tags$h3("Processing Progress:"),
+        uiOutput("progress")
+      )
     ),
     mainPanel(
       leafletOutput("map")
@@ -378,47 +422,111 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  reactiveHexRivers <- reactive({
-    rivers_sf <- st_as_sf(connected_river_segments, coords = c("lon", "lat"), crs = 4326)
-    set.seed(123)  # 为了可重复性
-    riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs = st_crs(rivers_sf))
-    rivers_sf <- rivers_sf %>% st_join(riverLines_water_quality_wgs84, by = "nzsegment")
+  mapTrigger <- reactiveVal(0)
+  progressInfo <- reactiveVal("")
 
-    # 根据用户选择的网格大小创建网格
+  reactiveRiverData <- reactive({
+    req(input$inputID)
+    mapTrigger()  # 添加对 mapTrigger 的依赖
+    progressInfo("Processing Input ID... ✓<br>")
+    
+    connected_hydroIDs <- findConnected(as.numeric(input$inputID), riverLines)
+    progressInfo("Computing connected hydro IDs... ✓<br>")
+    
+    connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+    progressInfo("Retrieving connected river segments... ✓<br>")
+    
+    rivers_sf <- st_as_sf(connected_river_segments, coords = c("lon", "lat"), crs = 4326)
+    rivers_sf <- rivers_sf %>% st_join(riverLines_water_quality_wgs84, by = "nzsegment")
+    progressInfo("Creating spatial data frame... ✓<br>")
+    
+    if (nrow(rivers_sf) == 0) {
+      progressInfo("No data to process. ✓<br>")
+      return(NULL)
+    }
+    progressInfo("Data processed successfully. ✓<br>")
+    #输出
+    rivers_sf %>% 
+  distinct(OBJECTID_1, .keep_all = TRUE)
+  })
+
+  reactiveHexRivers <- reactive({
+    req(reactiveRiverData())
+    progressInfo("Generating hex grid... ✓<br>")
+    
+    rivers_sf <- reactiveRiverData()
     hex_grid <- st_make_grid(rivers_sf, cellsize = input$gridsize, square = FALSE, what = "polygons")
     hex_sf <- st_sf(geometry = hex_grid)
-
-    # 聚合河流数据到六边形网格
+    
     hex_rivers <- st_join(hex_sf, rivers_sf, join = st_intersects) %>%
       group_by(geometry) %>%
-      summarize(Value = mean(value, na.rm = TRUE), .groups = 'drop')%>%st_transform(hex_rivers, crs = 4326)
-    
-    rivers_sf<-st_transform(rivers_sf, crs = 4326)
-    # 返回多个变量
-    list(hex_rivers = hex_rivers, rivers_sf = rivers_sf[!is.na(rivers_sf$value), ])
+      summarize(Value = mean(value, na.rm = TRUE), .groups = 'drop') %>%
+      st_transform(crs = 4326)
+    progressInfo("Hex rivers data prepared... ✓<br>")
+    list(hex_rivers = hex_rivers, rivers_sf = rivers_sf)
+  })
+
+  colorPalette <- reactive({
+    req(reactiveHexRivers()$hex_rivers)
+    values <- round(reactiveHexRivers()$hex_rivers$Value,2)
+    colorNumeric(palette = "viridis", domain = values, na.color = "transparent")
+  })
+
+  output$progress <- renderUI({
+    HTML(progressInfo())
   })
 
   output$map <- renderLeaflet({
+    req(reactiveHexRivers()$hex_rivers)
+    pal <- colorPalette()
+    
+    progressInfo("Rendering map... ✓<br>")
     map <- leaflet() %>%
       addProviderTiles(providers[[input$maptype]]) %>%
       addPolygons(
-        data = reactiveHexRivers()$hex_rivers,  # 获取 hex_rivers
-        fillColor = ~colorNumeric(palette = "viridis", domain = reactiveHexRivers()$hex_rivers$Value)(Value),
+        data = reactiveHexRivers()$hex_rivers,
+        fillColor = ~pal(Value),
         color = "white",
         fillOpacity = 0.4,
         popup = ~paste("Average Value: ", round(Value, 2))
       )
-
-    # 根据用户选择添加或不添加河流线条
+      
     if (input$showRivers) {
-      map <- map %>% addPolylines(data = reactiveHexRivers()$rivers_sf, color = "blue", weight = 2, opacity = 0.5)
+      map <- map %>% addPolylines(data = st_transform(reactiveHexRivers()$rivers_sf, crs = 4326), color = "blue", weight = 2, opacity = 0.5)
     }
+    else if(input$showStrahler) {
+     connected_river_segments <- reactiveRiverData() %>% req()
+      map <- generate_strahler_map(connected_river_segments)
+    }
+    else if(input$showShreve){
+      connected_river_segments <- reactiveRiverData() %>% req()
+      map <- generate_shreve_map(connected_river_segments)
+    }
+    
+    map
+  })
+  
+  observe({
+    if(input$showStrahler) {
+      # 如果用户选择显示河流分级，确保取消河流线条的显示
+      updateCheckboxInput(session, "showRivers", value = FALSE)
+      updateCheckboxInput(session,"showShreve",value = FALSE)
+    }
+    if(input$showShreve) {
+      # 如果用户选择显示河流分级，确保取消河流线条的显示
+      updateCheckboxInput(session, "showRivers", value = FALSE)
+      updateCheckboxInput(session,"showStrahler",value = FALSE)
+    }
+  })
 
-    map  # 返回更新后的地图
+  observeEvent(input$updateButton, {
+    progressInfo(paste(progressInfo(), "Update button clicked, updating map...✓<br>", sep = ""))
+    mapTrigger(mapTrigger() + 1)
   })
 }
 
 shinyApp(ui = ui, server = server)
+
 ```
 
 
