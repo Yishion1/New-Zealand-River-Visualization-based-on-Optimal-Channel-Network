@@ -18,8 +18,8 @@ library(RColorBrewer)
 library(leaflet)
 library(plotly)
 library(shiny)
-
-
+library(rgl)
+library(shinyRGL)
 
 
 
@@ -383,12 +383,19 @@ connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroID
 # 确保数据已加载
 if (!exists("riverLines") || !exists("riverLines_water_quality")) {
   riverLines <- st_read("D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp")
+
+  
   riverLines_water_quality <- st_read("D:/Dissertation/water_quality_shp/river-water-quality-nitrogen-modelled-2016-2020.shp")
-  riverLines_water_quality <- riverLines_water_quality%>%
+  riverLines_water_quality_AN <- riverLines_water_quality%>%
   select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(measure == "Ammoniacal nitrogen (adjusted)")%>%
   rename(nzsegment = nzsgmnt)
+  riverLines_water_quality_NN <- riverLines_water_quality%>%
+  select( strm_rd,measure,value,mesrmnt, nzsgmnt,climate,src_f_f,sg_lngt)%>%filter(measure == "Nitrate-nitrite nitrogen")%>%
+  rename(nzsegment = nzsgmnt)
+  rm(riverLines_water_quality)
 # 将sf对象转换为WGS84坐标系统 (EPSG:4326)
-riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs =st_crs(rivers_sf ))
+riverLines_water_quality_AN_wgs84 <- st_transform(riverLines_water_quality_AN, crs =st_crs(rivers_sf ))
+riverLines_water_quality_NN_wgs84 <- st_transform(riverLines_water_quality_NN, crs =st_crs(rivers_sf ))
 }
 
 ```
@@ -396,6 +403,7 @@ riverLines_water_quality_wgs84 <- st_transform(riverLines_water_quality, crs =st
 
 
 ```{r}
+
 ui <- fluidPage(
   titlePanel("Dynamic Hexagonal Grids on Leaflet Map"),
   sidebarLayout(
@@ -408,7 +416,11 @@ ui <- fluidPage(
                               "CartoDB Positron" = "CartoDB.Positron")),
       checkboxInput("showRivers", "Show River Lines", FALSE),
       checkboxInput("showStrahler", "Show Strahler River Classification", FALSE),
-      checkboxInput("showShreve","Show Shreve River Classification",FALSE),
+      checkboxInput("showShreve", "Show Shreve River Classification", FALSE),
+      selectInput("pollutant", "Select Pollutant Type:", 
+                  choices = c("Ammoniacal Nitrogen" = "AN", 
+                              "Nitrate-Nitrite Nitrogen" = "NN")),
+      uiOutput("statMethod"),
       actionButton("updateButton", "Update Map"),
       tags$div(
         tags$h3("Processing Progress:"),
@@ -421,12 +433,22 @@ ui <- fluidPage(
   )
 )
 
+
 server <- function(input, output, session) {
+  output$statMethod <- renderUI({
+    if (input$pollutant == "AN") {
+      selectInput("measurement", "Select Measurement Method:", 
+                  choices = c("Annual maximum" = "Annual maximum", "Median" = "Median"))
+    } else if (input$pollutant == "NN") {
+      selectInput("measurement", "Select Measurement Method:", 
+                  choices = c("Median" = "Median", "95th" = "95th"))
+    }
+  })
   mapTrigger <- reactiveVal(0)
   progressInfo <- reactiveVal("")
 
   reactiveRiverData <- reactive({
-    req(input$inputID)
+    req(input$inputID, input$pollutant, input$measurement)  # 确保同时有污染物类型和测量方法的输入
     mapTrigger()  # 添加对 mapTrigger 的依赖
     progressInfo("Processing Input ID... ✓<br>")
     
@@ -437,7 +459,18 @@ server <- function(input, output, session) {
     progressInfo("Retrieving connected river segments... ✓<br>")
     
     rivers_sf <- st_as_sf(connected_river_segments, coords = c("lon", "lat"), crs = 4326)
-    rivers_sf <- rivers_sf %>% st_join(riverLines_water_quality_wgs84, by = "nzsegment")
+    
+    # 根据用户选择连接不同的水质数据集
+    if (input$pollutant == "AN") {
+      water_quality_data <- st_transform(riverLines_water_quality_AN, crs = st_crs(rivers_sf))
+    } else if (input$pollutant == "NN") {
+      water_quality_data <- st_transform(riverLines_water_quality_NN, crs = st_crs(rivers_sf))
+    }
+    
+    # 过滤数据以匹配用户选择的测量方法
+    filtered_data <- water_quality_data %>% 
+      filter(mesrmnt == input$measurement)
+    rivers_sf <- rivers_sf %>% st_join(filtered_data, by = "nzsegment")
     progressInfo("Creating spatial data frame... ✓<br>")
     
     if (nrow(rivers_sf) == 0) {
@@ -445,9 +478,7 @@ server <- function(input, output, session) {
       return(NULL)
     }
     progressInfo("Data processed successfully. ✓<br>")
-    #输出
-    rivers_sf %>% 
-  distinct(OBJECTID_1, .keep_all = TRUE)
+    rivers_sf %>% distinct(OBJECTID_1, .keep_all = TRUE)
   })
 
   reactiveHexRivers <- reactive({
@@ -468,8 +499,11 @@ server <- function(input, output, session) {
 
   colorPalette <- reactive({
     req(reactiveHexRivers()$hex_rivers)
-    values <- round(reactiveHexRivers()$hex_rivers$Value,2)
-    colorNumeric(palette = "viridis", domain = values, na.color = "transparent")
+    # 创建从绿色到黄色到红色的颜色渐变
+    colorFunc <- colorRampPalette(c("green", "yellow", "red"))
+    min_val <- min(reactiveHexRivers()$hex_rivers$Value, na.rm = TRUE)
+    max_val <- max(reactiveHexRivers()$hex_rivers$Value, na.rm = TRUE)
+    colorNumeric(palette = colorFunc(100), domain =  c(min_val, max_val), na.color = "transparent")
   })
 
   output$progress <- renderUI({
@@ -487,8 +521,8 @@ server <- function(input, output, session) {
         data = reactiveHexRivers()$hex_rivers,
         fillColor = ~pal(Value),
         color = "white",
-        fillOpacity = 0.4,
-        popup = ~paste("Average Value: ", round(Value, 2))
+        fillOpacity = 0.2,
+        popup = ~paste("Average Value: ", Value)
       )
       
     if (input$showRivers) {
@@ -507,6 +541,10 @@ server <- function(input, output, session) {
   })
   
   observe({
+    if(input$showRivers){
+      updateCheckboxInput(session,"showShreve",value = FALSE)
+      updateCheckboxInput(session,"showStrahler",value = FALSE)
+    }
     if(input$showStrahler) {
       # 如果用户选择显示河流分级，确保取消河流线条的显示
       updateCheckboxInput(session, "showRivers", value = FALSE)
@@ -519,10 +557,6 @@ server <- function(input, output, session) {
     }
   })
 
-  observeEvent(input$updateButton, {
-    progressInfo(paste(progressInfo(), "Update button clicked, updating map...✓<br>", sep = ""))
-    mapTrigger(mapTrigger() + 1)
-  })
 }
 
 shinyApp(ui = ui, server = server)
@@ -535,22 +569,6 @@ shinyApp(ui = ui, server = server)
 
 
 
-# PLOT2
-
-```{r}
 
 
-rivers_sf1<-rivers_sf%>%filter(!is.na(value))
-coords <- st_coordinates(rivers_sf1)
-#Take the mean and plot it according to structure
-coords<-as.data.frame(coords)%>%group_by(L1)%>%summarise(X=mean(X),Y=mean(Y))%>%as.data.frame()
-
-plot_ly(data = rivers_sf1, x = ~coords[,2], y = ~coords[,3], type = 'scatter', mode = 'markers',
-  color = ~rivers_sf1$value, text = ~paste("Value:", rivers_sf1$value), 
-                         marker = list(symbol = 'triangle-up', size = 14),showlegend = F) %>%
-  layout(title = 'River Paths',
-         xaxis = list(title = 'Longitude'),
-         yaxis = list(title = 'Latitude'),legend=list(title = list(text = "")))%>%colorbar(title = "value")
-
-```
 
