@@ -1,0 +1,211 @@
+---
+title: "river_topology"
+author: "Yifan Wang"
+date: "2024-05-01"
+output: html_document
+---
+
+
+
+```{r }
+if (!require(networkD3)) {
+  install.packages("networkD3")
+}
+library(networkD3)
+library(htmlwidgets)
+library(shiny)
+library(igraph)
+library(ggraph)
+ID = 98018
+connected_hydroIDs <- findConnected(ID, riverLines_water_quality_AN_wgs84)
+connected_river_segments <- riverLines_water_quality_AN_wgs84[riverLines_water_quality_AN_wgs84$HydroID %in% connected_hydroIDs, ]
+connected_river_segments<-connected_river_segments %>% distinct(OBJECTID_1, .keep_all = TRUE)
+
+# 假设 connected_river_segments 已经加载到 data 变量中
+data <- as.data.frame(connected_river_segments)
+
+# 创建节点数据集，每个节点有唯一的ID，这里假设 HydroID 已经是唯一且连续的
+nodes <- data.frame(
+  id = seq(from = 0, to = nrow(data) - 1),
+  name = data$HydroID,
+  group = data$StreamOrde,  # 假设这是节点的分类字段
+  size = data$StreamOrde
+)
+
+# 创建边的数据集，确保不包含几何信息
+edges <- data.frame(data %>%
+  filter(NextDownID != -1) %>%
+  mutate(
+    source = match(HydroID, nodes$name) - 1,  # 当前行的 HydroID 在 nodes 的位置
+    target = match(NextDownID, nodes$name) - 1 , # 当前行的 NextDownID 在 nodes 的位置
+    Shape_Leng = Shape_Leng/100
+  ) %>%
+  select(source, target,Shape_Leng) ) # 选择需要的列
+
+
+# 设置颜色比例尺
+colourScale <- JS("d3.scaleOrdinal(d3.schemeCategory10)")  # 使用10种颜色的分类方案
+
+# 使用 networkD3 生成交互式图
+forceNetwork(Links = edges, Nodes = nodes, Source = "source",
+             Target = "target", Value = "Shape_Leng", NodeID = "name",
+             Group = "group", opacity = 0.7, arrows = TRUE,legend = T,bounded = T)
+
+
+
+```
+
+
+
+
+```{r}
+# 假设 edges 和 nodes 已经正确创建
+graph <- graph_from_data_frame(edges, vertices = nodes, directed = TRUE)
+
+# 添加节点的层级属性（Y坐标），假设 group 越小，层级越高
+V(graph)$y <- -as.numeric(V(graph)$group)  # 用负号是因为想让group小的在顶部
+V(graph)$x <- as.numeric(V(graph)$name)  # 这里暂时先用name作为X坐标，可以根据需要调整
+
+# 检查图对象结构
+plot(graph)
+# 绘制树状图
+# 使用ggraph绘制自定义布局的树状图
+ggraph(graph, layout = 'manual', x = V(graph)$x, y = V(graph)$y) + 
+  geom_edge_link(aes(edge_alpha = 0.5), arrow = arrow(length = unit(4, 'mm')), end_cap = circle(3, 'mm')) +
+  geom_node_point(color = 'steelblue', size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1.5) +
+  theme_void()  # 使用无背景主题
+
+```
+
+
+
+```{r}
+#读取不同河流的数据统一处理
+Hutt_ID = 98018
+Waipaoa_ID=5142593
+Whakatane_ID=999
+connected_hydroIDs <- findConnected(98018, riverLines_water_quality_AN_wgs84)
+connected_river_segments <- riverLines_water_quality_AN_wgs84[riverLines_water_quality_AN_wgs84$HydroID %in% connected_hydroIDs, ]
+connected_river_segments<-connected_river_segments %>% distinct(OBJECTID_1, .keep_all = TRUE)
+
+```
+
+
+```{r}
+topology_data<-as.data.frame(connected_river_segments%>%select(HydroID,NextDownID,Shape_Leng,StreamOrde,CUM_AREA))
+topology_data<-topology_data%>%select(HydroID,NextDownID,Shape_Leng,StreamOrde,CUM_AREA)
+
+topology_data <- topology_data %>%
+  left_join(topology_data %>% select(HydroID, StreamOrde), by = c("NextDownID" = "HydroID")) %>%
+  rename(NextStreamOrde = StreamOrde.y, StreamOrde = StreamOrde.x)
+head(topology_data)
+```
+
+```{r}
+# 按StreamOrde分组，计算每个级别的数量和总长度
+grouped <- topology_data %>%
+  group_by(StreamOrde) %>%
+  summarise(
+    number_of_segments = n(),
+    total_length = sum(Shape_Leng),
+     total_area  = sum(CUM_AREA),
+    .groups = 'drop'
+  )
+
+grouped <- grouped %>%
+  mutate(
+    branching_ratio = lag(number_of_segments) / number_of_segments,
+    length_ratio = lag(total_length) / total_length,
+    area_ratio = lag(total_area) / total_area
+  )
+
+ggplot(grouped[-1,], aes(x = StreamOrde)) +
+  geom_line(aes(y = branching_ratio, color = "branching ration"), size = 1) +
+  geom_point(aes(y = branching_ratio, color = "branching ration"), size = 3) +
+  geom_line(aes(y = length_ratio, color = "length ratio"), linetype = "dashed", size = 1) +
+  geom_point(aes(y = length_ratio, color = "length ratio"), size = 3) +
+  geom_line(aes(y = area_ratio, color = "area ration"), linetype = "dotted", size = 1) +
+  geom_point(aes(y = area_ratio, color = "area ration"), size = 3) +
+  labs(
+    x = "Stream Order",
+    y = "Ratio",
+    title = "Hutt River Holdenby at Different Levels",
+    colour = ''
+  ) +
+  scale_color_manual(values = c("branching ration" = "black", "length ratio" = "blue", "area ration" = "red")) + 
+  scale_x_continuous(breaks = 1:9, labels = paste(0:8, "~", 1:9)) +
+  theme_minimal(base_size = 14) +  # 使用基本字体大小为 14 的简洁主题
+  theme(
+    legend.position = "top",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.key.size = unit(1, "lines"),
+    panel.background = element_rect(fill = "white", colour = "black"), # 设置背景为白色
+    panel.grid.major = element_blank(),  # 移除主要网格线
+    panel.grid.minor = element_blank(),  # 移除次要网格线
+    plot.background = element_rect(fill = "white", colour = NA) # 设置图表背景为白色
+  ) +
+  coord_cartesian(clip = "off")  
+```
+
+
+#输出侧枝比矩阵
+```{r}
+head(grouped)
+# 初始化一个矩阵来保存侧枝比
+max_order <- max(topology_data$StreamOrde, na.rm = TRUE)
+T <- matrix(0, nrow = max_order, ncol = max_order, dimnames = list(1:max_order, 1:max_order))
+# 去除NextStreamOrde缺失的行
+topology_data <- topology_data[!is.na(topology_data$NextStreamOrde), ]
+
+# 计算侧枝比
+for(i in 1:max_order) {
+  for(j in (i+1):max_order) {
+    num_ij <- nrow(topology_data %>% filter(StreamOrde == i, NextStreamOrde == j))
+    num_j <- nrow(topology_data %>% filter(StreamOrde == j))
+    if (j <= max_order) {
+      T[i, j] <- if(num_j > 0) num_ij / num_j else 0
+    }
+  }
+}
+
+# 输出矩阵
+T
+```
+
+```{r}
+# 去掉矩阵的第一列
+T <- T[, -1]
+
+# 添加i和j的数字到每一行和每一列的开头
+T_df$StreamOrde_Label <- paste0("i=", T_df$StreamOrde)
+T_df$NextStreamOrde_Label <- paste0("j=", T_df$NextStreamOrde)
+
+# 添加Tij的值
+T_df$Tij <- as.vector(T)
+
+# 绘制热图
+ggplot(T_df, aes(x = NextStreamOrde_Label, y = StreamOrde_Label, fill = BranchingRatio)) +
+  geom_tile() +
+  geom_text(aes(label = round(BranchingRatio, 2)), color = "black", size = 3) +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  labs(
+    x = "",
+    y = "",
+    title = "Braching Ration of different Strahler Level",
+    fill = "Braching Ration"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(hjust = 1)
+  ) +
+  coord_fixed() + # 保持横纵比
+  scale_x_discrete(limits = c("j=2", "j=3", "j=4", "j=5", "j=6")) + # 限制 x 轴范围
+  scale_y_discrete(limits = c("i=1", "i=2", "i=3", "i=4", "i=5"))   # 限制 y 轴范围
+
+#河流的拓扑自相关性质，如果branching ratio变化较大体现了流域宏观条件（如地质等）对拓扑结构的影响
+
+```
+
