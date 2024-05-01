@@ -57,3 +57,5 @@ to do分两种污染源展示河流图，可以在一开始处理数据时候就
 
 # 4.30
 to do：https://catalogue.data.govt.nz/dataset/river-environment-classification-rec2-new-zealand    Lengthdown Real The distance to coast from any reach to its outlet reach, where the river drains (m). Headwater Integer Number (0) denoting whether a stream is a “source” (headwater) stream. Non-zero for non-headwater streams.  通过红心标注源头节点
+![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/47549162-4cc6-4208-a38c-59a1efd0ae04)
+
