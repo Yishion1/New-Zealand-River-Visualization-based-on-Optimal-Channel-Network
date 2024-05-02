@@ -60,3 +60,28 @@ to do：https://catalogue.data.govt.nz/dataset/river-environment-classification-
 ![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/47549162-4cc6-4208-a38c-59a1efd0ae04)
 对于论文可以加入一些关于河流自相关的分析，最后产出的shiny可以加入自相关的图标
 
+# 5.2
+# Horton-Strahler Method for Analyzing River Networks
+
+The Horton-Strahler method is a hierarchical system used to classify the branches of a river network. This system assigns an order to each segment of the river based on the structure of tributaries. It is particularly useful in geomorphology for quantifying the complexity of river networks.
+
+## Method Overview
+
+The Horton-Strahler method ranks river streams based on the number of tributaries upstream. The primary classification rules are:
+
+- If a stream segment has no tributaries, it is assigned order one.
+- When two streams of the same order join, the order of the resulting stream is one higher than the common order.
+- If two streams of different orders join, the order of the resulting stream is the higher of the two.
+
+## River Network Characteristics
+Upon classifying the river streams using the Horton-Strahler method, we can analyze the river network by examining the number and average length of streams at each order. The relationships are described by the following formulas:
+### Number of Streams at Each Order
+
+The number of streams \(N_i\) at each order \(i\) can be estimated by:
+![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/d1d33c22-2767-47ec-a2db-fca88239abdd)
+where:
+- \(N_1\) is the number of first-order streams.
+- \(R_B\) is the bifurcation ratio, typically between 3 and 5.
+- \(L_1\) is the average length of first-order streams.
+- \(R_L\) is the length ratio, usually between 1.5 and 3.
+
