@@ -86,7 +86,7 @@ where:
 - \(R_L\) is the length ratio, usually between 1.5 and 3.
 
 
-## Bifurcation Ratio
+## branching Ratio
 
 ![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/b490c455-6648-4be0-b4fe-a37193f9ee31)    
 where:
