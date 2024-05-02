@@ -77,7 +77,7 @@ The Horton-Strahler method ranks river streams based on the number of tributarie
 Upon classifying the river streams using the Horton-Strahler method, we can analyze the river network by examining the number and average length of streams at each order. The relationships are described by the following formulas:
 ### Number of Streams at Each Order
 
-The number of streams \(N_i\) at each order \(i\) can be estimated by:
+The number of streams \(N_i\) at each order \(i\) and average length (L_i\) at each order \(i\)  can be estimated by:
 ![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/d1d33c22-2767-47ec-a2db-fca88239abdd)
 where:
 - \(N_1\) is the number of first-order streams.
