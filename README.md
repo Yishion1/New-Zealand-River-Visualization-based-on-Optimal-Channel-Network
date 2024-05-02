@@ -85,3 +85,7 @@ where:
 - \(L_1\) is the average length of first-order streams.
 - \(R_L\) is the length ratio, usually between 1.5 and 3.
 
+
+### What does it do?  
+Stable branch ratio: If the branch ratio is stable, it indicates that the river network has high self-similarity and regularity. This suggests that the river network has a similar structure at different scales, often associated with uniform topography and consistent erosion processes.
+Drastic variation of branch ratio: If the branch ratio varies greatly in different parts of the river network or between different levels, it may indicate that the river network has been significantly affected by local topographic or geological conditions, such as rock hardness, soil erosion, and slope changes in the terrain.
