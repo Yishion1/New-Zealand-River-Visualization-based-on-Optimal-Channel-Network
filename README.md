@@ -81,7 +81,7 @@ The number of streams \(N_i\) at each order \(i\) and average length (L_i\) at e
 ![image](https://github.com/Yishion1/New-Zealand-River-Visualization-based-on-Optimal-Channel-Network/assets/66151793/d1d33c22-2767-47ec-a2db-fca88239abdd)
 where:
 - \(N_1\) is the number of first-order streams.
-- \(R_B\) is the bifurcation ratio, typically between 3 and 5.
+- \(R_B\) is the bifurcation ratio, typically between 3 and 5.The Branching Ratio in the context of river networks or any branching systems (such as tree branches, blood vessels, etc.) refers to the ratio of the number of branches in one order to the number of branches in the next higher order. 
 - \(L_1\) is the average length of first-order streams.
 - \(R_L\) is the length ratio, usually between 1.5 and 3.
 
