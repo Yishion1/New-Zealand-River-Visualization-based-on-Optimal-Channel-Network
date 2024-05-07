@@ -22,6 +22,7 @@ library(shinyRGL)
 library(viridisLite)
 library(viridis)
 library(htmlwidgets)
+library(reshape2)
 
 ```
 
@@ -340,14 +341,53 @@ for (river_name in river_names) {
 
 ```
 
+
 ```{r}
+# 你的数据集和河流ID
+river_names <- c("Marokopa", "Kahiaka", "Wairoa", "Whakatane", "Waipaoa", 
+                 "Tukituki", "Wairua", "Ashley", "Grey", "Hurunui", "Waitetara", 
+                 "Mohaka", "Hutt")
+
+# 读取河流的 connected_ID
+Marokopa_connected_ID <- read.table("Marokopa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Kahiaka_connected_ID <- read.table("Kahiaka_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Wairoa_connected_ID <- read.table("Wairoa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Whakatane_connected_ID <- read.table("Whakatane_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Waipaoa_connected_ID <- read.table("Waipaoa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Tukituki_connected_ID <- read.table("Tukituki_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Wairua_connected_ID <- read.table("Wairua_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Ashley_connected_ID <- read.table("Ashley_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Grey_connected_ID <- read.table("Grey_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Hurunui_connected_ID <- read.table("Hurunui_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Waitetara_connected_ID <- read.table("Waitetara_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Mohaka_connected_ID <- read.table("Mohaka_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Hutt_connected_ID <- read.table("Hutt_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+
+# 河流名称与ID的对应列表
+river_ids <- list(
+  Marokopa = Marokopa_connected_ID,
+  Kahiaka = Kahiaka_connected_ID,
+  Wairoa = Wairoa_connected_ID,
+  Whakatane = Whakatane_connected_ID,
+  Waipaoa = Waipaoa_connected_ID,
+  Tukituki = Tukituki_connected_ID,
+  Wairua = Wairua_connected_ID,
+  Ashley = Ashley_connected_ID,
+  Grey = Grey_connected_ID,
+  Hurunui = Hurunui_connected_ID,
+  Waitetara = Waitetara_connected_ID,
+  Mohaka = Mohaka_connected_ID,
+  Hutt = Hutt_connected_ID
+)
+
+
 ui <- fluidPage(
-  titlePanel("Dynamic Hexagonal Grids on Leaflet Map"),
+  titlePanel("Dynamic Hexagonal Grids and Branching Ratio Heatmap"),
   sidebarLayout(
     sidebarPanel(
       selectInput("riverName", "Select River:", 
                   choices = c("Marokopa", "Kahiaka", "Wairoa", "Whakatane", "Waipaoa", "Tukituki", 
-                              "Wairua", "Ashley", "Grey", "Hurunui", "Waitetara", "Mohaka","Hutt")),
+                              "Wairua", "Ashley", "Grey", "Hurunui", "Waitetara", "Mohaka", "Hutt")),
       sliderInput("gridsize", "Grid Cell Size:", min = 1000, max = 3000, value = 2000, step = 200),
       selectInput("maptype", "Select Map Type:", 
                   choices = c("OpenStreetMap" = "OpenStreetMap",
@@ -367,10 +407,14 @@ ui <- fluidPage(
       )
     ),
     mainPanel(
-      leafletOutput("map")
+      tabsetPanel(
+        tabPanel("Map", leafletOutput("map")),
+        tabPanel("Branching Ratio Heatmap", plotOutput("branchingRatioPlot"))
+      )
     )
   )
 )
+
 server <- function(input, output, session) {
   # 河流名称与ID的对应列表
   river_ids <- list(
@@ -498,6 +542,47 @@ server <- function(input, output, session) {
     
     map
   })
+
+  output$branchingRatioPlot <- renderPlot({
+    req(reactiveRiverData())
+    connected_river_segments <- reactiveRiverData() %>% distinct(OBJECTID_1, .keep_all = TRUE)
+    topology_data <- as.data.frame(connected_river_segments %>% select(HydroID, NextDownID, Shape_Leng, StreamOrde, CUM_AREA))
+    
+    topology_data <- topology_data %>%
+      left_join(topology_data %>% select(HydroID, StreamOrde), by = c("NextDownID" = "HydroID")) %>%
+      rename(NextStreamOrde = StreamOrde.y, StreamOrde = StreamOrde.x)
+    
+    max_order <- max(topology_data$StreamOrde, na.rm = TRUE)
+    T <- matrix(0, nrow = max_order, ncol = max_order, dimnames = list(1:max_order, 1:max_order))
+    topology_data <- topology_data[!is.na(topology_data$NextStreamOrde), ]
+    
+    for (i in 1:max_order) {
+      for (j in (i + 1):max_order) {
+        num_ij <- nrow(topology_data %>% filter(StreamOrde == i, NextStreamOrde == j))
+        num_j <- nrow(topology_data %>% filter(StreamOrde == j))
+        if (j <= max_order) {
+          T[i, j] <- if (num_j > 0) num_ij / num_j else 0
+        }
+      }
+    }
+    
+    T_df <- T
+    rownames(T_df) <- paste0("i=", 1:nrow(T_df))
+    colnames(T_df) <- paste0("j=", 1:ncol(T_df))
+    T_df <- melt(T_df)
+    names(T_df) <- c("i_label", "j_label", "Tij")
+    
+    T_df <- T_df %>%
+      filter(as.numeric(sub("i=", "", i_label)) < as.numeric(sub("j=", "", j_label)))
+    
+    ggplot(T_df, aes(x = j_label, y = i_label, fill = Tij)) +
+      geom_tile() +
+      geom_text(aes(label = ifelse(Tij != 0, round(Tij, 2), "")), vjust = 1) +
+      scale_fill_gradient(low = "white", high = "red", na.value = "white", limits = c(0.01, max(T_df$Tij, na.rm = TRUE))) +
+      labs(title = "Branching Ratio Heatmap", x = "Stream Order j", y = "Stream Order i") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
   
   observe({
     if (input$showRivers) {
@@ -516,7 +601,5 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui = ui, server = server)
-
 ```
-
 
