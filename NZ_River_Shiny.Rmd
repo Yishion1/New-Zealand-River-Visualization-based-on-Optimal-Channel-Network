@@ -312,9 +312,11 @@ if (!exists("riverLines") || !exists("riverLines_water_quality")) {
 # 将sf对象转换为WGS84坐标系统 (EPSG:4326)
 riverLines_water_quality_AN_wgs84 <- st_transform(riverLines_water_quality_AN, crs = st_crs(riverLines))
 riverLines_water_quality_AN_wgs84<- riverLines %>% st_join(riverLines_water_quality_AN_wgs84, by = "nzsegment")
+riverLines_water_quality_AN_wgs84<-riverLines_water_quality_AN_wgs84%>%select(HydroID,NextDownID,StreamOrde,measure,value,mesrmnt,geometry)
 
 riverLines_water_quality_NN_wgs84 <- st_transform(riverLines_water_quality_NN, crs = st_crs(riverLines))
 riverLines_water_quality_NN_wgs84<- riverLines %>% st_join(riverLines_water_quality_NN_wgs84, by = "nzsegment")
+riverLines_water_quality_NN_wgs84<-riverLines_water_quality__wgs84%>%select(HydroID,NextDownID,StreamOrde,measure,value,mesrmnt,geometry)
 rm(riverLines)
 rm(riverLines_water_quality_AN)
 rm(riverLines_water_quality_NN)
@@ -324,22 +326,6 @@ rm(riverLines_water_quality_NN)
 
 ```
 
-
-#读取预定义的河流
-```{r}
-# 定义河流的名称列表
-river_names <- c("Marokopa", "Kahiaka", "Wairoa", "Whakatane", "Waipaoa", "Tukituki", "Wairua", "Ashley", "Grey", "Hurunui", "Waitetara", "Mohaka","Hutt")
-
-# 循环读取每个文本文件，并将其存储到具有类似"Hutt_connected_ID"的变量名中
-for (river_name in river_names) {
-  # 构造文件路径
-  file_path <- paste0(river_name, "_connected_ID.txt")
-  
-  # 读取文件并存储到具有类似"Hutt_connected_ID"的变量名中
-  assign(paste0(river_name, "_connected_ID"), read.table(file_path, header = FALSE, stringsAsFactors = FALSE)$V1)
-}
-
-```
 
 
 ```{r}
@@ -476,7 +462,7 @@ server <- function(input, output, session) {
     }
     
     progressInfo("Data processed successfully. ✓<br>")
-    filtered_data %>% distinct(OBJECTID_1, .keep_all = TRUE)
+    filtered_data %>% distinct(HydroID, .keep_all = TRUE)
   })
 
   reactiveHexRivers <- reactive({
@@ -491,6 +477,8 @@ server <- function(input, output, session) {
       group_by(geometry) %>%
       summarize(Value = mean(value, na.rm = TRUE), .groups = 'drop') %>%
       st_transform(crs = 4326)
+    # 过滤掉包含 NA 值的六边形
+    hex_rivers <- hex_rivers[!is.na(hex_rivers$Value), ]
     progressInfo("Hex rivers data prepared... ✓<br>")
     list(hex_rivers = hex_rivers, rivers_sf = rivers_sf)
   })
@@ -545,8 +533,8 @@ server <- function(input, output, session) {
 
   output$branchingRatioPlot <- renderPlot({
     req(reactiveRiverData())
-    connected_river_segments <- reactiveRiverData() %>% distinct(OBJECTID_1, .keep_all = TRUE)
-    topology_data <- as.data.frame(connected_river_segments %>% select(HydroID, NextDownID, Shape_Leng, StreamOrde, CUM_AREA))
+    connected_river_segments <- reactiveRiverData() %>% distinct(HydroID, .keep_all = TRUE)
+    topology_data <- as.data.frame(connected_river_segments %>% select(HydroID, NextDownID, StreamOrde))
     
     topology_data <- topology_data %>%
       left_join(topology_data %>% select(HydroID, StreamOrde), by = c("NextDownID" = "HydroID")) %>%
@@ -601,5 +589,18 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui = ui, server = server)
+```
+```{r}
+connected_river_segments <- riverLines_water_quality_AN_wgs84[riverLines_water_quality_AN_wgs84$HydroID %in% Kahiaka_connected_ID, ]
+connected_river_segments<-connected_river_segments %>% distinct(OBJECTID_1, .keep_all = TRUE)
+connected_river_segments <- st_transform(connected_river_segments, crs = 4326)
+# 创建地图
+leaflet_map <- leaflet(data = connected_river_segments) %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+  addPolylines(color = "#2A1B81", weight = ~6 / StreamOrde, opacity = 1) %>%
+  
+
+# 打印地图
+print(leaflet_map)
 ```
 
