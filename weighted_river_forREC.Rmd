@@ -236,9 +236,9 @@ calculateInfluenceDynamically_REC <- function(final_river_segments, upstreamInfl
 }
 
 
-water_quality_influences <- final_segments_waterquality$value
+water_quality_influences <- 1
 
-influence_results <- calculateInfluenceDynamically_REC(upstreamInfluenceWeight=0.1, final_river_segments = final_segments_waterquality,connectivity = 20,influences = water_quality_influences)
+influence_results <- calculateInfluenceDynamically_REC(upstreamInfluenceWeight=0.1, final_river_segments = connected_river_segments,connectivity = 20,influences = water_quality_influences)
 normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
 
 hist(influence_results, main="Distribution of  Influence Weights", xlab=" Influence Weight", breaks=20)
@@ -262,7 +262,7 @@ library(ggplot2)
 results_df <- data.frame(Influence = numeric(), Weight = factor())
 # 遍历upstreamInfluenceWeight值从0到1，步长为0.1
 for (weight in seq(0.1, 1, by=0.1)) {
-  influence_results <- calculateInfluenceDynamically_REC(connectivity=10, upstreamInfluenceWeight=weight, final_river_segments = final_segments_waterquality,influences = water_quality_influences)
+  influence_results <- calculateInfluenceDynamically_REC(connectivity=10, upstreamInfluenceWeight=weight, final_river_segments = connected_river_segments,influences = water_quality_influences)
   normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
   # 将当前权重下的影响力结果添加到数据框
   results_df <- rbind(results_df, data.frame(Influence = normalized_influences, Weight = as.factor(sprintf("%.1f", weight))))
@@ -288,8 +288,8 @@ library(plotly)
 results_df <- data.frame(Influence = numeric(), Connectivity = factor())
 
 # 遍历connectivity值从1到10
-for (conn in seq(1,20,6)) {
-  influence_results <- calculateInfluenceDynamically_REC(connectivity=conn, upstreamInfluenceWeight=0.7, final_river_segments)
+for (conn in seq(1,20,3)) {
+  influence_results <- calculateInfluenceDynamically_REC(connectivity=conn, upstreamInfluenceWeight=1, final_river_segments)
   normalized_influences <- (influence_results - min(influence_results)) / (max(influence_results) - min(influence_results))
   
   # 将当前connectivity下的影响力结果添加到数据框

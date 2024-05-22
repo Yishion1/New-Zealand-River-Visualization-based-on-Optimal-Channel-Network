@@ -1,0 +1,120 @@
+---
+title: "river network extraction"
+author: "Yifan Wang"
+date: "2024-05-22"
+output: html_document
+---
+
+
+```{r}
+riverLines <- st_read("D:/Dissertation/REC2_Layers_Shapefiles/River_Lines.shp")
+
+
+```
+
+```{r}
+# 读取多个河流的连接ID数据
+Marokopa_connected_ID <- read.table("Marokopa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Wairoa_connected_ID <- read.table("Wairoa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Whakatane_connected_ID <- read.table("Whakatane_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Waipaoa_connected_ID <- read.table("Waipaoa_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+Tukituki_connected_ID <- read.table("Tukituki_connected_ID.txt", header = FALSE, stringsAsFactors = FALSE)$V1
+
+# 将连接的ID结合起来
+connected_ids_list <- list(
+  Marokopa = Marokopa_connected_ID,
+  Wairoa = Wairoa_connected_ID,
+  Whakatane = Whakatane_connected_ID,
+  Waipaoa = Waipaoa_connected_ID,
+  Tukituki = Tukituki_connected_ID
+)
+
+# 初始化存储结果的列表
+results <- list()
+rb_values <- list()  # 初始化存储Rb结果的列表
+rl_values <- list()  # 初始化存储Rl结果的列表
+
+# 循环处理每个河流的连接ID
+for (name in names(connected_ids_list)) {
+  connected_hydroIDs <- connected_ids_list[[name]]
+  connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+  topology_data <- as.data.frame(connected_river_segments %>% 
+                                   select(HydroID, NextDownID, Shape_Leng, StreamOrde, CUM_AREA))
+  topology_data <- topology_data %>% 
+                   left_join(topology_data %>% select(HydroID, StreamOrde), 
+                             by = c("NextDownID" = "HydroID")) %>%
+                   rename(NextStreamOrde = StreamOrde.y, StreamOrde = StreamOrde.x)
+  
+  grouped <- topology_data %>%
+              group_by(StreamOrde) %>%
+              summarise(
+                number_of_segments = n(),
+                average_length = mean(Shape_Leng),
+                total_area = sum(CUM_AREA),
+                .groups = 'drop'
+              )
+  grouped$river <- name
+  results[[name]] <- grouped
+  
+  # 提取 N1 的值
+  N1 <- grouped %>% filter(StreamOrde == 1) %>% pull(number_of_segments)
+  
+  # 计算每个 StreamOrde 的 R_B 和 R_L
+  grouped <- grouped %>%
+              arrange(StreamOrde) %>%
+              mutate(R_B = lag(number_of_segments) / number_of_segments,
+                     R_L = average_length / lag(average_length),
+                     river = name)  # 添加 river 列
+  
+  rb_values[[name]] <- grouped %>%
+                       select(StreamOrde, R_B, river) %>%
+                       filter(!is.na(R_B))
+                       
+  rl_values[[name]] <- grouped %>%
+                       select(StreamOrde, R_L, river) %>%
+                       filter(!is.na(R_L))
+}
+
+# 合并所有河流的数据
+all_results <- bind_rows(results)
+all_rb_values <- bind_rows(rb_values)
+all_rl_values <- bind_rows(rl_values)
+
+# 创建区间标签
+all_rb_values <- all_rb_values %>%
+  mutate(StreamOrderInterval = paste0(StreamOrde-1, "-", StreamOrde))
+
+all_rl_values <- all_rl_values %>%
+  mutate(StreamOrderInterval = paste0(StreamOrde-1, "-", StreamOrde))
+
+# 绘制 R_B 与 Stream Order 的关系
+plot3 <- ggplot(all_rb_values, aes(x = StreamOrde, y = R_B, color = river, group = river)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = all_rb_values$StreamOrde, labels = all_rb_values$StreamOrderInterval) +
+  labs(title = "Bifurcation Ratio vs Stream Order",
+       x = "Stream Order",
+       y = "R_B",
+       color = "River") +
+  theme_minimal()
+
+# 绘制 R_L 与 Stream Order 的关系
+plot4 <- ggplot(all_rl_values, aes(x = StreamOrde, y = R_L, color = river, group = river)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = all_rl_values$StreamOrde, labels = all_rl_values$StreamOrderInterval) +
+  labs(title = "Length Ratio vs Stream Order",
+       x = "Stream Order",
+       y = "R_L",
+       color = "River") +
+  theme_minimal()
+
+# 显示图表
+print(plot3)
+print(plot4)
+
+# 打印每个河流的Rb和Rl值
+print(all_rb_values)
+print(all_rl_values)
+```
+
