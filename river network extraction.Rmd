@@ -117,4 +117,86 @@ print(plot4)
 print(all_rb_values)
 print(all_rl_values)
 ```
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(gridExtra)
+# Assuming the earlier code for loading river data and calculating R_B and R_L has been executed
+
+# Function to calculate side branching ratio matrix
+calculate_side_branching_ratio <- function(topology_data) {
+  max_order <- max(topology_data$StreamOrde, na.rm = TRUE)
+  T <- matrix(0, nrow = max_order, ncol = max_order, dimnames = list(1:max_order, 1:max_order))
+  topology_data <- topology_data[!is.na(topology_data$NextStreamOrde), ]
+
+  for(i in 1:max_order) {
+    for(j in (i+1):max_order) {
+      num_ij <- nrow(topology_data %>% filter(StreamOrde == i, NextStreamOrde == j))
+      num_j <- nrow(topology_data %>% filter(StreamOrde == j))
+      if (j <= max_order) {
+        T[i, j] <- if(num_j > 0) num_ij / num_j else 0
+      }
+    }
+  }
+  return(T)
+}
+
+# List to store side branching ratio matrices
+side_branching_ratios <- list()
+
+# Calculate side branching ratios for each river
+for (name in names(connected_ids_list)) {
+  connected_hydroIDs <- connected_ids_list[[name]]
+  connected_river_segments <- riverLines[riverLines$HydroID %in% connected_hydroIDs, ]
+  topology_data <- as.data.frame(connected_river_segments %>% 
+                                   select(HydroID, NextDownID, Shape_Leng, StreamOrde, CUM_AREA))
+  topology_data <- topology_data %>% 
+                   left_join(topology_data %>% select(HydroID, StreamOrde), 
+                             by = c("NextDownID" = "HydroID")) %>%
+                   rename(NextStreamOrde = StreamOrde.y, StreamOrde = StreamOrde.x)
+  side_branching_ratios[[name]] <- calculate_side_branching_ratio(topology_data)
+}
+# Convert side branching ratio matrices to dataframes and melt for ggplot
+prepare_heatmap_data <- function(matrix, river_name) {
+  df <- melt(matrix)
+  colnames(df) <- c("StreamOrder_i", "StreamOrder_j", "SideBranchingRatio")
+  df <- df %>%
+    filter(StreamOrder_i < StreamOrder_j) %>%
+    mutate(River = river_name,
+           StreamOrder_i_label = paste0("i=", StreamOrder_i),
+           StreamOrder_j_label = paste0("j=", StreamOrder_j))
+  return(df)
+}
+
+# Prepare data for each river
+heatmap_data_list <- lapply(names(side_branching_ratios), function(river) {
+  prepare_heatmap_data(side_branching_ratios[[river]], river)
+})
+
+# Combine all heatmaps dataframes
+combined_heatmap_data <- bind_rows(heatmap_data_list)
+
+# Create the heatmap plot
+heatmap_plot <- ggplot(combined_heatmap_data, aes(x = StreamOrder_j_label, y = StreamOrder_i_label, fill = SideBranchingRatio)) +
+  geom_tile() +
+  geom_text(aes(label = ifelse(SideBranchingRatio != 0, round(SideBranchingRatio, 2), "")), size = 3, vjust = 0.5, hjust = 0.5) +
+  scale_fill_gradient(low = "white", high = "red", na.value = "white", limits = c(0.01, max(combined_heatmap_data$SideBranchingRatio, na.rm = TRUE))) +
+  labs(title = "Side Branching Ratio Heatmaps for Rivers", fill = "Side Branching Ratio") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(size = 10),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  facet_wrap(~ River, ncol = 2, scales = "free")
+
+# Display the plot
+print(heatmap_plot)
+```
 
